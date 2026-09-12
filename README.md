@@ -209,8 +209,22 @@ AI 小方/
 **电脑没独显能跑吗？**
 能。会自动以 CPU 硬算模式运行，功能完全一样，只是思考稍慢一点点。
 
-**小方要联网吗？**
-不需要。核心对话完全本地离线运行；只有你主动问天气/搜东西且开启联网时才联网。
+**小方要在周末才能更新，为什么？**
+因为小方的作者是个**学生** 😴——**周末才能摸到电脑**。周一到周五都得上课写作业，只有放假了才能坐下来更新代码。
+
+> 🌏 For foreign friends: The author is a **student**, so updates only happen on **weekends** — that's the only time he can touch his computer. And yes, that Chinese meme about "your computer gets smashed if you slack off in school" is **100% real** 😅 So if a week comes along where the update doesn't happen... it probably means the PC got destroyed. You've been warned.
+
+**小方真的是纯自研吗？**
+是的，**100% 是** ✅。前期只用 **NumPy** 手搓，后期想到显卡能加速，才加上了 **CuPy**——全程**没有使用任何 Transformer 库，也没有用 PyTorch** 之类的深度学习框架，一行一行都是自己写的。
+
+**小方未来会有 Agent 框架吗？**
+会有的。小方正在朝「能自己思考 + 能动手办事」的方向进化，Agent 能力在计划中——敬请期待 🚀（不过按上面的更新节奏……也得等周末。）
+
+**未来可以吊打 GPT 吗？**
+这个问题得谦虚一点：小方是**本地、单机、i7/R7 单 CPU**就能跑的模型，跟财大气粗的云端大模型拼参数规模肯定是比不了的。但小方主打**纯自研、可离线、有性格**，在"一台普通电脑就能跑起来的 AI"这个赛道里，它绝对是一匹黑马 🐎。
+
+**你又在更，你这个破 AI 游戏还做不做了？**
+做！当然做！小方是「小方工作室」的一份子，工作室的主业本来就是**用心做好游戏** 🎮，AI 小方只是搭子之一。想看看工作室的游戏们都出到哪儿了？**详情请看官网** → [fanggame.company](https://fanggame.company)
 
 **设置存在哪？**
 `xiaofang_settings.py`。在聊天框输入 `/setting` 修改后会自动写盘，下次启动生效。
