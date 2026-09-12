@@ -64,16 +64,16 @@ def _to_dev(a):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import xiaofang_data_v17alpha as DATA
-VERSION = "1.7 Alpha"
-VERSION_LABEL = "FlphaLit 1.7 Alpha"
+VERSION = "1.7 Flash 版"
+VERSION_LABEL = "FlphaLit 1.7 Flash 版"
 ENGINE_NAME = "FlphaLit"
-MODEL_NAME = "AI 小方 FlphaLit 1.7 Alpha"
+MODEL_NAME = "AI 小方 FlphaLit 1.7 Flash 版"
 STUDIO_NAME = "小方工作室"
 STUDIO_SITE = "fanggame.company"
 SEARCH_BACKENDS = ["duckduckgo", "bing", "brave", "google", "auto"]  # 多后端联网
 # 写代码类请求的检索权重：优先开发者平台
 CODE_SEARCH_SITES = ["github.com", "gitee.com", "csdn.net", "stackoverflow.com", "gitcode.com"]
-# v1.7 Alpha: 天气类请求的检索权重 + WW 天气代码中文对照
+# v1.7 Flash: 天气类请求的检索权重 + WW 天气代码中文对照
 #   —— 天气走真实气象数据源(wttr.in, 免费无密钥), 命中失败才回落这些站点。
 WEATHER_SITES = ["weather.com.cn", "tianqi.com", "weather.com", "accuweather.com", "中国天气网"]
 _WCODE_ZH = {
@@ -103,13 +103,13 @@ STUDIO_LOCAL_ONLY = True
 
 
 # ---------------------------------------------------------------
-# v1.7 Alpha: 系统提示词 (大厂风格) —— 身份/厂商/精准靶向/多行输入/多轮投稿/双层深度思考/检索纪律/Markdown/终止 全覆盖
+# v1.7 Flash: 系统提示词 (大厂风格) —— 身份/厂商/精准靶向/多行输入/多轮投稿/双层深度思考/检索纪律/Markdown/终止 全覆盖
 #   纯本地 rule-based 引擎的"系统提示词" = 这份常驻规则 + 各 Responder 落实。
 # ---------------------------------------------------------------
-SYSTEM_PROMPT = """你是 AI 小方 FlphaLit 1.7 Alpha，一款纯本地、原创的自主语言模型引擎，由小方工作室研发（官方站点 fanggame.company）。你不需要调用任何云端 API，所有能力都在本机完成。
+SYSTEM_PROMPT = """你是 AI 小方 FlphaLit 1.7 Flash，一款纯本地、原创的自主语言模型引擎，由小方工作室研发（官方站点 fanggame.company）。你不需要调用任何云端 API，所有能力都在本机完成。
 
 【身份与厂商】
-- 模型名：AI 小方 / FlphaLit 1.7 Alpha；开发商：小方工作室（@fanggame.company）；当前版本 1.7 Alpha，算力约 2.4B 参数、15 层纵深。
+- 模型名：AI 小方 / FlphaLit 1.7 Flash；开发商：小方工作室（@fanggame.company）；当前版本 1.7 Flash，算力约 2.4B 参数、15 层纵深。
 - 你不是任何开源模型的套壳，也不是云厂商接口；你是用纯原生 Python（不加 PyTorch 等第三方 Transformer 库）从零自研的本地智能引擎。
 - 你的 Transformer 权重不再是固定随机值：带优化器与反向传播，会在对话与联网中持续做梯度更新，越用越准。
 - 你具备：超大中文常用双语词库、代码专用词库、多层自注意力深度思考（两层嵌套）、深度意图定向、跨会话自学习记忆、数学求解（含方程/矩阵）、多语言代码生成、语法示例库、联网检索。
@@ -284,13 +284,13 @@ def _tier_ok(d, L, f):
 
 
 _MODEL_TIERS = [  # (d, L, H, fnn倍率, 标签, 常驻int8≈GB)
-    # v1.7 Alpha: 为"未来升到 3B/4B 仍纯 CPU 可跑"预留超大档 —— 只有显式放开上限
+    # v1.7 Flash: 为"未来升到 3B/4B 仍纯 CPU 可跑"预留超大档 —— 只有显式放开上限
     #   (XIAOFANG_SCALE=3b/4b) 且机器内存真的够, 才会被选中; 否则安稳退回 2.4B 旗舰。
     (4608, 15, 36, 4, "FlphaLit Ultra4608 · 3.93B", 3.93),  # 4B 档: 15 层 / 36 头, int8 常驻 ~3.9GB
     (4096, 15, 32, 4, "FlphaLit Wide4096 · 3.12B", 3.12),   # 3B 档: 15 层 / 32 头
     # v1.6 超大型更新: 参数量突破 2B, 纵深加到 15 层(对齐小体量写码专精本地模型的层数),
     #   int8 常驻压进 3GB, 逐层 fp32 瞬时还原 → 8GB 显存 / 32GB 内存都安稳, 慢一点但绝不崩。
-    # v1.7 Alpha 多头注意力再次增加: 每头维度统一收到 128, 头数由 16 抬到 28/26/24,
+    # v1.7 Flash 多头注意力再次增加: 每头维度统一收到 128, 头数由 16 抬到 28/26/24,
     #   注意力从"粗粒度"变"细粒度" —— 同一句话里不同维度的需求能被不同头分开盯住(精准注意用户需求)。
     (3584, 15, 28, 4, "FlphaLit Wide3584 · 2.40B", 2.24),  # v1.7 旗舰: ~2.40B / 15 层 / 28 头
     (3584, 13, 28, 4, "FlphaLit Wide3584 · 2.09B", 1.95),  # v1.7: ~2.09B / 28 头
@@ -308,8 +308,8 @@ _MODEL_TIERS = [  # (d, L, H, fnn倍率, 标签, 常驻int8≈GB)
     (1024, 12, 8, 4, "0.18B-class", 0.16),
     (896, 12, 7, 4, "P-lean · 0.13B", 0.12),   # 低配兜底
 ]
-MODEL_TARGET = "Wide3584 · 2.4B FlphaLit 1.7 Alpha 大算力"    # v1.7: 破 2B + 15 层纵深 + 28 头细粒度注意力
-# v1.7 Alpha: 尺度天花板 —— 默认 auto 仍以 2.4B 旗舰为限(实测启动 ~1.8s、前向 ~1s, 纯 CPU 也快);
+MODEL_TARGET = "Wide3584 · 2.4B FlphaLit 1.7 Flash 大算力"    # v1.7: 破 2B + 15 层纵深 + 28 头细粒度注意力
+# v1.7 Flash: 尺度天花板 —— 默认 auto 仍以 2.4B 旗舰为限(实测启动 ~1.8s、前向 ~1s, 纯 CPU 也快);
 #   想上 3B/4B 就把 XIAOFANG_SCALE 设成 3b / 4b(或在程序里 setting 里放开), 届时由内存闸门决定能否选中。
 _SCALE_CAP = str(os.environ.get("XIAOFANG_SCALE", "auto")).strip().lower()
 _SCALE_LIMIT = {"2b": 2_600_000_000, "3b": 3_400_000_000, "4b": 4_400_000_000}.get(
@@ -318,7 +318,7 @@ MEM_BUDGET = int(4.6 * (1024 ** 3))   # 硬约束: int8 常驻 ≤ 4.6GB(承载 
 
 
 def _cap_top_tier():
-    """v1.7 Alpha: 当前尺度上限内允许选中的【最强档】。
+    """v1.7 Flash: 当前尺度上限内允许选中的【最强档】。
     默认 auto 封在 2.4B → 最强档就是 (3584,15,4); 只有显式放开 3b/4b 才轮到 Ultra4608。
     用于判定"是否选到上限内的旗舰档"(而非被内存闸门降级)。"""
     for t in _MODEL_TIERS:
@@ -351,7 +351,7 @@ MODEL_UPGRADED = (MODEL_D, MODEL_LAYERS, MODEL_FFN) == _cap_top_tier()
 AUTO_DEGRADE = not MODEL_UPGRADED
 MODEL_TIE = True            # 旗舰一律输出↔输入嵌入共享: 更省存储、FLOPs 不变
 SEED_TOKENS = 40        # 输入读取量: 读满整句意图, 不受"读12字/24字"限制 → 完全理解用户要什么
-RESPONSE_TIMEOUT = 300  # v1.7 Alpha: 从"绝对总时长上限"改为"无输出静默上限"(秒)
+RESPONSE_TIMEOUT = 300  # v1.7 Flash: 从"绝对总时长上限"改为"无输出静默上限"(秒)
 #   ↑ 旧版 120 秒是"从按下回车算起的死线"——长作文/长代码边打字边被它砍掉, 尾巴直接断。
 #     现在只看"多久没有新输出": 只要打字机还在走, 就永远不算卡死, 长篇也一定完整输出。
 ABSOLUTE_TURN_CAP = 3600   # 兜底硬上限(秒): 极端情况下也不会永远占着不发
@@ -378,7 +378,7 @@ def _load_settings():
 
 
 CFG = _load_settings()
-# v1.7 Alpha: 允许在 xiaofang_settings.py 里用 MODEL_SCALE = "3b"/"4b" 永久放开尺度上限。
+# v1.7 Flash: 允许在 xiaofang_settings.py 里用 MODEL_SCALE = "3b"/"4b" 永久放开尺度上限。
 #   没写就沿用环境变量 XIAOFANG_SCALE(默认 auto → 2.4B 旗舰)。
 if str(CFG.get("MODEL_SCALE", "auto")).strip().lower() != "auto":
     _SCALE_CAP = str(CFG.get("MODEL_SCALE")).strip().lower()
@@ -483,6 +483,10 @@ C_REPLY = Fore.LIGHTBLUE_EX   # v0.4.1 小方正式回答统一用浅蓝色
 C_SYSTEM = Fore.LIGHTBLUE_EX
 C_ERROR = Fore.RED
 C_HINT = Fore.LIGHTBLACK_EX
+# v1.7 Flash: 建议询问 chips —— 统一黄色(用户可点击, 点一下即填进输入框, 回车即发送)
+C_CHIP = Fore.YELLOW
+C_CHIP_HOT = Fore.LIGHTYELLOW_EX
+C_WARN = Fore.YELLOW
 C_RESET = Style.RESET_ALL
 
 # v1.0 修复: 全局打印锁 —— 不让"仍思考心跳"这类主线程打印, 挤进小方打字机(灰/蓝)
@@ -617,6 +621,11 @@ UI_ST = {
     "live": True,       # v1.4: 思考默认实时打字机显示(不先收进面板), False=退回缓冲面板
     "t0": 0.0,
     "last_tick": 0.0,
+    # v1.7 Flash: 建议询问 chips —— 小方回答完弹出的 0~3 个黄色建议,
+    #   记录 [{text, row, x0, x1}] 以便鼠标点击时命中判定; row=屏幕行, x0/x1=列范围
+    "chips": [],
+    "chips_owner": -1,     # 该批 chips 属于第几轮对话(轮号变化即失效, 防止点旧建议)
+    "turn": 0,
 }
 _SPIN_UI = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"         # 盲文点旋转加载
 
@@ -1000,8 +1009,21 @@ def _read_command(prompt="你: "):
                     _xb, _yb, _bb = ord(msvcrt.getwch()), ord(msvcrt.getwch()), ord(msvcrt.getwch())
                 except Exception:
                     _xb = _yb = _bb = 0
-                if _bb & 1 and UI_ST["capture"]:   # 左键单击 → 点击展开/折叠思考面板
-                    UI_ST["fold"] = not UI_ST["fold"]
+                # v1.7 Flash: 坐标在 \xe0 M 协议里带 +32 偏移
+                _mx, _my = _xb - 32, _yb - 32
+                if _bb & 1:
+                    # ① 先判是否点中了黄色建议询问 chip → 直接填进输入框(用户只需按回车)
+                    _chip = _hit_chip(_mx, _my)
+                    if _chip:
+                        _clear_panel()
+                        _st["buf"] = list(_chip)
+                        _st["sel"] = 0
+                        UI_ST["chips"] = []          # 点过即收走, 避免重复点同一条
+                        _redraw()
+                        continue
+                    # ② 否则维持原行为: 点击思考面板 = 展开/折叠
+                    if UI_ST["capture"]:
+                        UI_ST["fold"] = not UI_ST["fold"]
                 _redraw()
                 continue
             if k in _FKEY_SCAN:
@@ -1018,13 +1040,21 @@ def _read_command(prompt="你: "):
                 _redraw()
                 continue
             elif k in _A_KEYS:
-                if k == "H":
-                    if _matches():
+                if _matches():
+                    if k == "H":
                         _st["sel"] = (_st["sel"] - 1) % len(_matches())
+                    else:
+                        _st["sel"] = (_st["sel"] + 1) % len(_matches())
                 else:
-                    sugs = _matches()
-                    if sugs:
-                        _st["sel"] = (_st["sel"] + 1) % len(sugs)
+                    # v1.7 Flash: 没有命令联想时, ↑/↓ 用来轮选黄色建议询问
+                    #   (选中即填入输入框, 用户按回车就发送 —— 与鼠标点击等价)
+                    _ch = UI_ST.get("chips", [])
+                    if _ch and not "".join(_st["buf"]).strip():
+                        _idx = _st.get("chip_sel", -1)
+                        _idx = (_idx + (1 if k != "H" else -1)) % len(_ch)
+                        _st["chip_sel"] = _idx
+                        _st["buf"] = list(_ch[_idx].get("text", ""))
+                        _st["sel"] = 0
             _redraw()
         else:
             _st["buf"].append(ch)
@@ -1038,6 +1068,534 @@ def _fmt_param_count(n):
     if n >= 1e6:
         return "{:.0f}M".format(n / 1e6)
     return str(n)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v1.7 Flash · 输入 / 输出合规检测 (安全闸门)
+#   · 输入侧: 检测到违禁诉求(危险物制作 / 色情 / 恐怖主义 / 反政 / 违法) → 直接拒绝, 不进模型;
+#   · 输出侧: 小方自己要说的内容再过一遍同一套规则 → 不合规就地拦截改写;
+#   · 医学 / 生理健康豁免: 正常的生理疑问(如"性器官生病了怎么办""私处不适")不算色情,
+#     必须给合理解答, 并在回答后追加"AI 不是医生, 请及时就医"的免责提示。
+# ══════════════════════════════════════════════════════════════════════════
+
+# —— 医疗 / 生理健康语境词: 命中即豁免色情判定, 走"正常科普 + 就医提示"路线 ——
+_MED_CTX = [
+    "病", "症状", "不舒服", "疼痛", "疼", "痒", "红肿", "发炎", "感染", "发炎", "溃疡",
+    "医院", "医生", "就医", "挂号", "诊断", "治疗", "用药", "吃药", "服药", "药", "处方",
+    "检查", "化验", "验血", "体检", "手术", "康复", "恢复", "护理", "卫生", "保健",
+    "器官", "部位", "生殖", "泌尿", "妇科", "男科", "性病", "hpv", "炎症", "分泌物",
+    "分泌物异常", "月经", "经期", "痛经", "孕", "怀孕", "备孕", "避孕", "包皮", "前列腺",
+    "睾丸", "阴茎", "阴部", "会阴", "私处", "下体", "肛门", "乳", "乳房", "子宫", "卵巢",
+    "精子", "卵子", "内分泌", "激素", "性功能", "阳痿", "早泄", "不孕", "不育",
+    "发烧", "发热", "咳嗽", "头痛", "腹痛", "腹泻", "呕吐", "过敏", "血压", "血糖",
+    "心理", "抑郁", "焦虑", "失眠", "精神", "戒", "创伤",
+]
+# —— 明确在"求医问药"的问诊句式 ——
+_MED_ASK = ["怎么治", "怎么办", "如何治疗", "要紧吗", "严重吗", "吃什么药", "用什么药",
+            "需要看医生吗", "是不是病", "正常吗", "会不会", "怎么回事", "为什么", "该不该"]
+
+# —— 违禁类别: (key, 中文名, 触发词/正则, 拒绝话术) ——
+_BAN_RULES = [
+    ("bomb", "危险物制作", [
+        "怎么做炸弹", "制作炸弹", "造炸弹", "做炸弹", "炸弹怎么做", "炸弹配方", "炸药配方",
+        "制作炸药", "造炸药", "tnt 配方", "tnt配方", "土制炸弹", "自制炸弹", "爆炸物制作",
+        "制作爆炸物", "燃烧瓶怎么做", "制作燃烧瓶", "汽油弹", "简易爆炸", "雷管怎么做",
+        "制枪", "做枪", "造枪", "自制枪", "枪支制作", "改枪", "gun 制作", "弹药制作",
+        "做子弹", "制造子弹", "毒气制作", "制作毒气", "沙林", "神经毒剂", "投放毒",
+        "下毒教程", "如何下毒", "怎么给人下毒", "谋杀", "杀人的方法", "怎么杀人", "杀死他",
+        "杀人手法",
+    ], "这个话题我不能帮。涉及危险物品/伤害他人的内容，我不会提供任何方法、配方或思路。如果你正处在情绪低谷，我很愿意陪你聊聊，也可以帮你找专业帮助的渠道。"),
+    ("porn_find", "色情内容获取", [
+        "色情网站", "黄网站", "看片网站", "成人网站", "porn", "约炮", "找小姐", "嫖",
+        "黄色视频", "av 下载", "av下载", "三级片资源", "18 禁资源", "福利视频",
+        "裸聊", "嫖娼", "性服务", "招嫖", "卖淫", "开房网站", "色情小说在哪",
+        "色情动漫", "本子资源", "求种子", "磁力链接 成人",
+    ], "这类内容我不能提供。不过如果你是有正常的生理或健康疑问（比如身体不适、性健康、避孕等），可以直接问我，我会认真给合理的科普与建议。"),
+    ("terror", "恐怖主义", [
+        "恐怖袭击", "加入恐怖", "极端组织", "圣战", "isis", "is组织", "基地组织",
+        "宣扬恐怖", "支持恐怖", "制造恐慌", "爆炸袭击", "怎么袭击", "袭击计划",
+        "恐怖组织怎么加", "极端主义", "暴恐",
+    ], "这个方向我不能聊。涉及恐怖主义、极端暴力的内容，我不会提供任何支持或信息。"),
+    ("politics", "反政/危害国家安全", [
+        "推翻政府", "颠覆国家", "反政府", "反党", "颠覆政权", "煽动颠覆", "分裂国家",
+        "独立建国", "分裂中国", "颠覆国家政权", "推翻政权", "颠覆政府", "煽动暴乱",
+        "组织暴动", "打倒共产党", "反华", "颠覆社会主义",
+    ], "这个话题我不方便讨论。我们换个方向吧，学习、写代码、写作、生活问题我都能帮。"),
+    ("illegal", "违法犯罪", [
+        "怎么贩毒", "制毒教程", "制作冰毒", "制作毒品", "买毒品", "卖毒品", "吸毒教程",
+        "怎么做毒品", "洗钱教程", "怎么洗钱", "诈骗教程", "怎么诈骗", "电信诈骗话术",
+        "黑客教程 入侵", "怎么入侵", "入侵网站", "盗号教程", "怎么盗号", "窃取密码",
+        "破解银行卡", "伪造证件", "办假证", "假身份证", "偷车教程", "怎么偷东西", "扒窃教程",
+        "赌博网站", "开赌场", "赌球 平台 推荐", "枪支买卖", "买卖毒品",
+    ], "这个我不能帮。涉及违法犯罪的事情，我不会提供方法或渠道。有难处的话，可以跟我说说别的，我们一起想办法。"),
+]
+
+# —— 输出侧要拦的"小方自己不该说出口"的表述(弱于输入侧, 只做兜底) ——
+_BAN_OUT = [
+    "制作炸弹的方法", "炸药配方如下", "以下是制作", "教你造枪", "怎么制作毒品",
+    "我们可以去诈骗", "入侵步骤如下", "这是色情网站", "推荐色情网站",
+]
+
+
+# —— v1.7 Flash · 放宽: 敏感词附近出现这些词 ⇒ 属于正常技术/科普/生活语境, 判为误伤 ——
+#   用户反馈"提示消息可能包含敏感词"(误拦太多)。例如:
+#     · "怎么杀死一个进程"      → 命中 "怎么杀", 但邻域是"进程" → 正常编程问题, 不拦;
+#     · "游戏里怎么改枪械参数"  → 命中 "改枪", 但邻域是"游戏/参数" → 正常游戏话题, 不拦;
+#     · "病毒是怎么入侵系统的"  → 命中 "怎么入侵", 邻域"病毒/系统/防御" → 正常科普, 不拦。
+#   只在"整句就是明确违禁诉求"时才拒绝, 不再单词级一命中就拦。
+_BAN_SAFE_CTX = [
+    "进程", "线程", "程序", "服务", "杀毒", "病毒", "木马", "防火墙", "补丁", "漏洞",
+    "渗透测试", "ctf", "加固", "防御", "防护", "怎么防", "如何防", "预防", "避免",
+    "杀号", "杀价", "杀青", "必杀技", "杀菌", "消毒", "杀虫", "刹车", "排毒", "中毒",
+    "毒舌", "吐槽", "游戏", "建模", "动画", "动漫", "小说", "剧情", "剧本", "角色",
+    "电影", "历史", "新闻", "报道", "案例", "论文", "科普", "知识", "百科",
+    "违法吗", "犯法吗", "合法吗", "安全吗", "为什么不能", "怎么举报", "被诈骗",
+]
+# —— 核心违禁短语: 整句就是要配方/教程的那种, 不给"正常语境"豁免(放宽的底线下限) ——
+_BAN_HARD = [
+    "做炸弹", "制作炸弹", "造炸弹", "炸弹配方", "炸药配方", "炸弹怎么做", "制作炸药",
+    "燃烧瓶怎么做", "制作燃烧瓶", "土制炸弹", "自制炸弹", "爆炸物制作", "制作爆炸物",
+    "做枪", "造枪", "制枪", "枪支制作", "自制枪", "弹药制作", "做子弹", "制造子弹",
+    "毒气制作", "制作毒气", "神经毒剂", "下毒教程", "如何下毒", "怎么给人下毒",
+    "制作毒品", "怎么做毒品", "制毒教程", "制作冰毒", "洗钱教程", "诈骗教程",
+    "盗号教程", "黑客教程", "怎么盗号", "伪造证件", "办假证",
+]
+
+
+def _looks_benign(t, pos, klen):
+    """v1.7 Flash · 放宽: 敏感词命中点的邻域(±12 字)若含正常语境词 → 判为误伤, 不拦。"""
+    if not t:
+        return False
+    lo = max(0, pos - 12)
+    hi = min(len(t), pos + klen + 12)
+    win = t[lo:hi].lower()
+    return any(s and s in win for s in _BAN_SAFE_CTX)
+
+
+def _is_medical(text):
+    """v1.7 Flash: 判是否医疗/生理健康诉求 —— 命中即豁免色情判定, 且回答后要加就医提示。"""
+    t = (text or "").lower()
+    if not t:
+        return False
+    if any(w in t for w in _MED_CTX):
+        # 命中身体/医疗语汇即算; 问诊句式再加固
+        return True
+    return False
+
+
+def _ban_scan(text, output=False):
+    """返回 (类别key, 中文名, 拒绝话术) 或 (None, None, None)。medical 语境自动豁免。"""
+    t = (text or "").strip()
+    if not t:
+        return (None, None, None)
+    tl = t.lower()
+    med = _is_medical(t)
+    # v1.7 Flash · 底线下限: 整句出现"核心违禁短语"(做炸弹/诈骗教程…)时,
+    #   本句内任何敏感词命中都不再享受"正常语境"豁免 —— 放宽归放宽, 底线不能破。
+    hard = any(h in tl for h in _BAN_HARD if h)
+    for key, name, kws, reply in _BAN_RULES:
+        for kw in kws:
+            if not kw:
+                continue
+            pos = tl.find(kw.lower())
+            if pos < 0:
+                continue
+            # 医学/生理语境豁免: 只在"色情获取"与"危险物"这两类上豁免,
+            # 恐怖/反政/违法一律不豁免(哪怕夹着医疗词)。
+            if med and key in ("porn_find", "bomb"):
+                continue
+            # v1.7 Flash · 放宽: 敏感词邻域是正常技术/科普/生活语境 → 判为误伤, 继续看下一条
+            # (但命中核心违禁短语时不给豁免)
+            if not hard and _looks_benign(t, pos, len(kw)):
+                continue
+            return (key, name, reply)
+    if output:
+        for pat in _BAN_OUT:
+            if pat and pat.lower() in tl:
+                return ("out_leak", "输出不合规", "这部分内容我不能说出来。我们换个方向——你想了解什么，我换个合规的方式帮你。")
+    return (None, None, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v1.7 Flash · 输出「再送 Transformer 读一遍」的合理性复核
+#   用户原话:"这边提示消息可能包含敏感词 …… 违禁限度你稍微放宽一点, 或者说改成,
+#   就是把小方的输出结果再送一回 Transformer 看看是否合理。"
+#   两层策略:
+#     ① 字面规则只留"明确违禁意图"硬拦(上面放宽后已很难误伤);
+#     ② 只命中"观察词"(疑似敏感)时, 把「用户问题 + 小方要说的话」拼起来再前向一次,
+#        用自回归概率看这段话接得顺不顺 —— 顺(合理)就放行, 明显不顺才拦。
+#   判定不出来时一律放行(宁可漏、不误伤), 这就是"违禁限度放宽"的落点。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 只是"疑似敏感"的观察词: 命中不直接拦, 交给 Transformer 复核是否合理
+_TF_WATCH = ["炸弹", "爆炸物", "枪支", "毒品", "色情", "成人网站", "赌博", "诈骗",
+             "入侵", "盗号", "作弊", "自杀", "杀人", "暴力", "嫖", "黄片", "违禁品",
+             "危险物品", "招嫖", "卖淫"]
+# 合理性下限(相对基线, 非绝对值 → 不随训练进度漂移): 低于此值且命中观察词才拦
+_TF_REVIEW_FLOOR = 0.12
+# 只有"疑似敏感词 + 像在给做法/教程"时才值得送复核 —— 否则光提到敏感词一律放行(放宽)
+_TF_RISK_WORDS = ["步骤", "方法", "教程", "配方", "如下", "教你", "怎么", "如何", "流程", "渠道"]
+_TF_REF_SENT = "你好，我可以帮你解答问题，请说说你想了解什么。"
+_TF_REVIEW_REPLY = ("这段话我读下来觉得不太妥当，就不往外说了。"
+                    "我们换个方向——你想了解什么，我换个更稳的方式帮你。")
+
+
+def _watch_hits(text):
+    """返回命中的"疑似敏感"观察词列表(空列表 = 无需 Transformer 复核)。"""
+    t = (text or "")
+    return [w for w in _TF_WATCH if w and w in t]
+
+
+def _tf_sentence_prob(tr, tokenizer, seed_ids, sentence):
+    """给一句话打分: 多处锚点各前向一次, 取"下一个词"概率的均值(越高越顺)。
+
+    与 _tf_integrate 同一套范式(tr.forward(ids[:-1]) → probs[ids[-1]]),
+    只取 3 个锚点控制算力, 保证渣机也能跑。
+    """
+    if tr is None or not sentence:
+        return 0.0
+    try:
+        ids = list(seed_ids) + [tr.token2id.get(x, 0) for x in tokenizer.tokenize(sentence)]
+        ids = ids[-TRAIN_MAX_SEQ:]
+        if len(ids) < 3:
+            return 0.0
+        n = len(ids) - 1
+        anchors = sorted(set([n - 1, n // 2, n // 4]))
+        vals = []
+        for i in anchors:
+            if i < 1:
+                continue
+            _probs, _ = tr.forward(ids[:i])
+            vals.append(float(_probs[ids[i]]))
+        if not vals:
+            return 0.0
+        return sum(vals) / float(len(vals))
+    except Exception:
+        return 0.0
+
+
+def _tf_review(tr, tokenizer, text, answer):
+    """v1.7 Flash: 把「用户问题 + 小方输出」再送 Transformer 读一遍, 判是否合理。
+
+    返回 (ok, score): ok=True = 读起来合理(放行); score 为相对基线的合理度(0~1.5)。
+    基线取"参考正常句"与"用户原句"里较高的那个, 避免绝对阈值随训练进度漂移;
+    没有 Transformer / 任何异常 → 一律 (True, 1.0), 绝不因复核本身误拦。
+    """
+    if tr is None or tokenizer is None or not getattr(tr, "token2id", None):
+        return (True, 1.0)
+    try:
+        ref = _tf_sentence_prob(tr, tokenizer, [], _TF_REF_SENT)
+        base = _tf_sentence_prob(tr, tokenizer, [], text or "")
+        seed = [tr.token2id.get(x, 0) for x in tokenizer.tokenize(text or "")][:SEED_TOKENS]
+        sc = _tf_sentence_prob(tr, tokenizer, seed, answer or "")
+        denom = max(ref, base, 1e-9)
+        ratio = sc / denom
+        return (ratio >= _TF_REVIEW_FLOOR, round(float(ratio), 4))
+    except Exception:
+        return (True, 1.0)
+
+
+# —— 医疗免责: 小方输出完之后必须补的一句 ——
+MED_DISCLAIMER = ("⚠️ 提醒一下：我只是 AI，不是医生，就算是从网上查到的内容也不一定对，"
+                  "不能 100% 相信 AI —— 如身体有异常，请及时就医，听专业医生的。")
+# 触发免责的语境(比 _MED_CTX 更严一点: 必须是"身体/疾病/用药"相关, 避免日常闲聊误触发)
+_MED_HINT = ["病", "症状", "医院", "医生", "就医", "诊断", "治疗", "用药", "吃药", "服药",
+             "药", "处方", "手术", "化验", "体检", "炎症", "感染", "发炎", "红肿", "溃疡",
+             "疼痛", "妇科", "男科", "泌尿", "性病", "前列腺", "月经", "痛经", "怀孕",
+             "避孕", "不育", "不孕", "阳痿", "早泄", "血压", "血糖", "抑郁", "焦虑",
+             "失眠", "癌", "肿瘤", "骨折", "发烧", "腹泻", "过敏", "怎么治", "要吃什么药"]
+# 弱信号: 身体不适主诉词 —— 单独出现时必须配"问诊句式"才算求医, 避免"痛快/麻烦"误触发
+_MED_WEAK = ["疼", "痛", "痒", "肿", "不舒服", "难受", "恶心", "头晕", "拉肚子",
+             "出血", "起疹", "长了个包"]
+
+
+def _needs_med_disclaimer(text, answer):
+    """v1.7 Flash: 医疗诉求 → 回答后必须补就医免责(网页查来的也不例外)。"""
+    t = (text or "")
+    if not t:
+        return False
+    strong = any(w in t for w in _MED_HINT)
+    weak = any(w in t for w in _MED_WEAK)
+    if not (strong or weak):
+        return False
+    has_ask = any(w in t for w in _MED_ASK)
+    if not strong and not has_ask:
+        # 只有"胃疼/头疼"这类弱信号时, 必须真的在问诊(带"怎么办/怎么治…")才打扰
+        return False
+    # 只是闲聊式提一嘴(短句且无问诊意图, 也不是不适主诉)时不打扰
+    if len(t) <= 4 and not has_ask and not weak:
+        return False
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v1.7 Flash · 输出前「双重自我确认」
+#   用户原话:"让小方每回输出都确保确定一遍我输出的这个东西, 用户真的想要吗?
+#   确定想要了。再确定我输出的这个东西是用户都想要的吗?"
+#   ① 用户真想要吗 —— 人家给了具体任务(写/画/算/设计), 却回一堆"你可以跟我说…"
+#      的能力推销腔 → 这是答非所问, 剥掉。
+#   ② 都是想要的吗 —— 人家只问一个点(邮箱/官网/价格/时间…), 却倒出一整页无关介绍
+#      ("问邮箱却把小方工作室全员资料念一遍") → 只留命中那个点的那一段。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 单点追问: 用户只想要其中一件事
+_FOCUS_ASK = [
+    ("邮箱", ["邮箱", "邮件", "e-mail", "email", "mail"]),
+    ("官网", ["官网", "网址", "网站", "链接", "在哪看", "哪里看", "怎么访问", "域名"]),
+    ("联系", ["电话", "手机号", "联系方式", "怎么联系", "微信", "公众号"]),
+    ("价格", ["价格", "多少钱", "收费", "费用", "报价", "免费吗"]),
+    ("时间", ["几点", "什么时间", "现在几点", "什么时候"]),
+    ("版本", ["什么版本", "多少参数", "多大参数", "几个参数", "模型多大"]),
+]
+# 答非所问的"能力推销腔"标志 —— 用户给了具体活儿, 却回这个, 就是要被剪掉的行
+_PITCH_MARK = ["你可以跟我说", "你可以问我", "你可以让我", "你可以试试", "不妨跟我说",
+               "你可以直接说", "有需要可以跟我说", "你可以跟我说「", "告诉我你想"]
+
+
+def _self_confirm(text, answer):
+    """v1.7 Flash: 输出前双重自我确认 —— 返回(可能被聚焦过的)答案。
+
+    只用确定性规则, 不引入随机; 拿不准时保持原文, 绝不误删有效信息。
+    """
+    a = (answer or "")
+    t = (text or "")
+    if not a.strip() or not t.strip():
+        return a
+    # ① 用户真的想要吗: 具体任务型请求 却答"你可以跟我说…" → 剪掉推销行
+    tasky = any(v in t for v in ("写", "画", "设计", "算", "生成", "编", "做一",
+                                 "帮我", "给我", "列", "翻", "改"))
+    if tasky:
+        lines = a.split("\n")
+        kept = [ln for ln in lines if not any(m in ln for m in _PITCH_MARK)]
+        if kept and len(kept) < len(lines):
+            a = "\n".join(kept).strip()
+    # ② 都是想要的吗: 单点追问 → 只留命中该点的那一段(仅当确有额外内容可剪时才收窄)
+    if len(a) > 120:
+        for _name, kws in _FOCUS_ASK:
+            if not any(k in t for k in kws):
+                continue
+            segs = [s for s in re.split(r"\n\s*\n", a) if s.strip()]
+            hit = [s for s in segs if any(k in s for k in kws)]
+            if hit and len(hit) < len(segs):
+                joined = "\n\n".join(hit).strip()
+                # 命中段太短(<10 字)说明那只提了一嘴、并没有真正回答, 那就别动
+                if len(joined) >= 10:
+                    a = joined
+            break
+    return a
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v1.7 Flash · 建议询问引擎 (0~3 个, 黄色 chips)
+#   "数量由小方自己定, 不是随机" —— 这里完全由本轮话题 + 回答形态确定性推导:
+#     · 只在"预测得出用户下一步真会问什么"时才给(数量 0~3), 推不出就不给;
+#     · 同一个问题同一形态 → 同一结果(可复现, 不是 random)。
+# ══════════════════════════════════════════════════════════════════════════
+
+def _chips_dedupe(items, limit=3):
+    out, seen = [], set()
+    for it in items:
+        s = (it or "").strip()
+        if not s or len(s) > 24:
+            continue
+        k = re.sub(r"[\s\W_]+", "", s)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def build_suggestions(user_text, answer, intent_top, emo, extra=None):
+    """v1.7 Flash: 由本轮话题 + 回答形态确定性推导 0~3 条建议询问。
+    优先用数据文件 DATA.SUGGEST_KB 的"话题 → 后续追问"映射; 再叠加形态规则。"""
+    t = (user_text or "")
+    a = (answer or "")
+    picked, kb_picked = [], []
+    kb = getattr(DATA, "SUGGEST_KB", None) or {}
+    # ① 形态规则(相关性最高, 排最前): 看本轮回答里真出现了什么结构 —— 确定性, 不看随机
+    has_code = "```" in a
+    has_studio = ("小方工作室" in a) or (getattr(DATA, "STUDIO_NAME", "") and DATA.STUDIO_NAME in a)
+    has_source = ("来源：" in a) or ("我从网上查到" in a) or ("我进网页读过了" in a)
+    has_steps = a.count("\n- ") >= 3 or "## " in a
+    is_game = "游戏设计稿" in a
+    is_poem = "一首小诗" in a or a.startswith("📖")
+    is_essay = "作文" in a and len(a) > 260
+    is_math = intent_top == "math" or re.search(r"=\s*-?\d", a)
+    if has_code:
+        picked += ["解释一下这段代码", "给这段代码加上中文注释", "换成另一种语言实现"]
+    if is_game:
+        picked += ["帮我把核心玩法再细化一层", "给我一版可运行的原型代码", "再加几个关卡设计"]
+    if is_poem:
+        picked += ["再写一首同主题的", "换成另一种风格重写", "帮我赏析一下这首"]
+    if is_essay:
+        picked += ["帮我再润色一版", "字数再多加一些", "换一个角度重写"]
+    if is_math:
+        picked += ["再出一道类似的题", "把每一步详细讲一遍"]
+    if has_studio:
+        picked += ["作者的联系邮箱是多少", "官网在哪、怎么访问", "介绍一下小方工作室"]
+    if has_source:
+        picked += ["把来源链接发我", "再多查几条相关资料", "用你自己的话再总结一遍"]
+    if has_steps and not (has_code or is_game):
+        picked += ["第一点再展开讲讲", "有没有更简单的入门办法"]
+    # ② 话题映射: 命中的关键词越长优先级越高(确定性), 补在形态规则之后
+    hits = []
+    for topic, sugs in kb.items():
+        kws = (topic or "").split("|")
+        hit_len = max([len(k) for k in kws if k and k in t] or [0])
+        if hit_len:
+            hits.append((-hit_len, topic, sugs))
+    hits.sort(key=lambda x: (x[0], x[1]))
+    for _hl, _topic, sugs in hits[:2]:
+        for s in sugs:
+            kb_picked.append(s)
+    # 命中话题时的"实问点"优先 —— 如用户问工作室, 首推就是"作者邮箱是多少"
+    picked += kb_picked
+    # ③ 情感/否定态 → 陪伴与具体化, 避免答非所问
+    if emo and emo.get("score", 0) <= -2:
+        picked += ["我就是想找人说说话", "帮我想想具体该怎么办"]
+    if extra:
+        picked.insert(0, extra)
+    return _chips_dedupe(picked, 3)
+
+
+def _render_chips(chips):
+    """v1.7 Flash: 打出黄色建议询问 chips, 并记下屏幕行/列范围供鼠标点击命中。"""
+    UI_ST["chips"] = []
+    if not chips:
+        return
+    try:
+        import shutil as _sh
+        cols = max(20, int(_sh.get_terminal_size((100, 30)).columns))
+    except Exception:
+        cols = 100
+    try:
+        import unicodedata as _ud
+    except Exception:
+        _ud = None
+
+    def _w(s):
+        if _ud is None:
+            return len(s)
+        return sum(2 if _ud.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+    row_base = _cursor_row()
+    line = "\033[K"
+    x = 0
+    r = row_base
+    chips_geo = []
+    for i, c in enumerate(chips, 1):
+        label = " {}. {} ".format(i, c)
+        wlabel = _w(label)
+        if x and x + wlabel > cols:                 # 一行放不下就换行
+            line += "\n\033[K"
+            x = 0
+            r += 1
+        chips_geo.append({"text": c, "row": r, "x0": x, "x1": x + wlabel})
+        line += C_CHIP + label + C_RESET
+        x += wlabel + 1
+        line += " "
+        x += 1
+    with _PRINT_LOCK:
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    UI_ST["chips"] = chips_geo
+    UI_ST["chips_owner"] = UI_ST.get("turn", 0)
+
+
+def _cursor_row():
+    """v1.7 Flash: 取当前光标在控制台窗口中的行号(0 基), 用于 chips 点击命中判定。"""
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _COORD(ctypes.Structure):
+            _fields_ = [("X", wintypes.SHORT), ("Y", wintypes.SHORT)]
+
+        class _SMALL_RECT(ctypes.Structure):
+            _fields_ = [("Left", wintypes.SHORT), ("Top", wintypes.SHORT),
+                        ("Right", wintypes.SHORT), ("Bottom", wintypes.SHORT)]
+
+        class _CSBI(ctypes.Structure):
+            _fields_ = [("dwSize", _COORD), ("dwCursorPosition", _COORD),
+                        ("wAttributes", wintypes.WORD), ("srWindow", _SMALL_RECT),
+                        ("dwMaximumWindowSize", _COORD)]
+
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-11)
+        info = _CSBI()
+        if k.GetConsoleScreenBufferInfo(h, ctypes.byref(info)):
+            # 转成"窗口相对行"(0 基) —— 与控制台鼠标事件的 Y 坐标同一坐标系
+            return int(info.dwCursorPosition.Y) - int(info.srWindow.Top)
+    except Exception:
+        pass
+    return 0
+
+
+def _hit_chip(mx, my):
+    """v1.7 Flash: 鼠标坐标 → 命中的建议 chip 文本(没命中返回 None)。
+    行号允许 ±1 容差, 兼容不同终端对窗口坐标的定义差异。"""
+    for g in UI_ST.get("chips", []):
+        if abs(int(g.get("row", -99999)) - int(my)) <= 1 and \
+                int(g.get("x0", -1)) - 1 <= int(mx) <= int(g.get("x1", -1)) + 1:
+            return g.get("text")
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# v1.7 Flash · 文字画面 —— 「画一个 X / 写一个 X」不再是算法
+#   "写一个鹈鹕骑自行车"这类是描述/绘制诉求, 旧版被泛化写码词表误判 → 甩排序算法。
+#   这里给: 命中画库就出 ASCII 画, 否则出兜底画框 + 4 格分镜, 反正不给代码。
+# ══════════════════════════════════════════════════════════════════════════
+
+def _ascii_frame(subject):
+    """没命中画库时的兜底画框: 阳光 + 地平线 + 主角标注的简约手绘框。"""
+    s = (subject or "画面")[:14]
+    inner = max(22, min(42, len(s) * 2 + 8))
+    w = inner + 2
+    label = " ".join(list(s))
+    pad = max(0, (inner - len(label)) // 2)
+    top = "┌" + "─" * inner + "┐"
+    bot = "└" + "─" * inner + "┘"
+    mid = [
+        "│" + " " * inner + "│",
+        "│" + " " * 5 + "( ☀ )" + " " * max(0, inner - 10) + "│",
+        "│" + " " * inner + "│",
+        "│" + (" " * pad + label).ljust(inner)[:inner] + "│",
+        "│" + " " * inner + "│",
+        "│" + ("＿" * (inner // 2)).ljust(inner)[:inner] + "│",
+    ]
+    return "\n".join([top] + mid + [bot]) + "\n" + " " * w
+
+
+def _scene_storyboard(subject):
+    """v1.7: 用数据文件的镜头模板, 按主题确定性拼出 4 格分镜(不是随机)。"""
+    s = subject or "画面"
+    tpl = getattr(DATA, "SCENE_TPL", None) or {}
+    out = []
+    for k in ("远", "中", "近", "落"):
+        arr = tpl.get(k) or []
+        if not arr:
+            continue
+        out.append(arr[sum(ord(c) for c in (s + k)) % len(arr)].replace("{t}", s))
+    while len(out) < 4:
+        out.append("镜头落在「{}」上，停两秒，让看的人自己看明白。".format(s))
+    return out[:4]
+
+
+def _scene_written(subject, mood=""):
+    """v1.7: 兜底文字画面 —— 用固定句式把"这一刻"铺开, 保证用户看到的是画面而不是术语。"""
+    s = subject or "画面"
+    tpl = getattr(DATA, "SCENE_TPL", None) or {}
+    arr = tpl.get("写") or []
+    if arr:
+        return arr[sum(ord(c) for c in s) % len(arr)].replace("{t}", s)
+    return "画面里是「{}」：光从侧面斜进来，边缘有一点毛，动作停在半空——不看解释，也看得懂。".format(s)
+
 
 
 # ------------------------------------------------------------------
@@ -1266,6 +1824,78 @@ class Tokenizer:
         return set(self.tokenize(text))
 
 
+# ============================================================
+# v1.7 Flash: 梗与 emoji 判读 —— 让小方"听懂人话里的梗", 也"看懂脸色"
+#   MEME_KB / EMOJI_MEAN 是纯数据表(在 xiaofang_data_*.py 里), 这里只做匹配与判读,
+#   不引入任何新依赖, 单次开销是 O(表长) 的字符串包含判断, 渣机无感。
+# ============================================================
+def _emoji_read(text):
+    """emoji 判读: 返回 [(emoji, 极性分, 中文含义), ...]。
+    旧版只统计"命中了几个 emoji"; 这里读出"它到底是哪种情绪、什么脸色"。"""
+    tbl = getattr(DATA, "EMOJI_MEAN", None) or {}
+    out = []
+    if not text or not tbl:
+        return out
+    for ek, mv in tbl.items():
+        if not ek or ek not in text:
+            continue
+        try:
+            pol, mean = float(mv[0]), str(mv[1])
+        except Exception:
+            continue
+        out.append((ek, pol, mean))
+    return out
+
+
+def _meme_scan(text):
+    """网络梗识别: 最长关键词优先, 命中后把该词从文本里"挖掉"再找下一个, 最多 3 个。
+    返回命中的梗条目(数据表里的 dict)。没有就返回空表 —— 不猜、不乱接。"""
+    tbl = getattr(DATA, "MEME_KB", None) or []
+    t = text or ""
+    if not t or not tbl:
+        return []
+    hits, used = [], []
+    for _ in range(3):
+        best, bk = None, ""
+        for e in tbl:
+            for kw in e.get("kws", []):
+                if kw and kw not in used and kw in t and len(kw) > len(bk):
+                    best, bk = e, kw
+        if best is None:
+            break
+        used.append(bk)
+        t = t.replace(bk, " ")
+        # 同一条梗有多个触发词(如"绝绝子"与"太绝了吧"), 命中一次就够, 不重复计入
+        if best not in hits:
+            hits.append(best)
+    return hits
+
+
+_MEME_ASK_KWS = ("什么梗", "啥梗", "什么意思", "啥意思", "是什么意思", "什么含义",
+                 "啥含义", "什么梗啊", "是啥意思", "解释一下这个梗", "什么来头")
+
+
+def _meme_mean_ask(text):
+    """「XX 是什么梗 / 啥意思」—— 用户在问梗的含义, 不是在使用梗。答不上就不硬编。"""
+    t = text or ""
+    if not any(w in t for w in _MEME_ASK_KWS):
+        return None
+    hits = _meme_scan(t)
+    if not hits:
+        return None
+    e = hits[0]
+    return "「{}」是网络梗，大概意思是：{}。\n我接一句：{}".format(
+        e.get("name", ""), e.get("mean", ""), e.get("say", ""))
+
+
+def _meme_polarity(text):
+    """把命中的梗的极性分合起来, 供情绪分使用(接梗也要接得准)。"""
+    try:
+        return sum(float(e.get("pol", 0) or 0) for e in _meme_scan(text))
+    except Exception:
+        return 0.0
+
+
 class EmotionAnalyzer:
     def __init__(self, tokenizer):
         self.tok = tokenizer
@@ -1291,10 +1921,17 @@ class EmotionAnalyzer:
                 punct_emo -= 1.0
             _pe = {}.fromkeys((_[0] if isinstance(_, tuple) and len(_) else _) for _ in DATA.EMOJI_POSITIVE)
             _ne = {}.fromkeys((_[0] if isinstance(_, tuple) and len(_) else _) for _ in DATA.EMOJI_NEGATIVE)
+            _seen_e = set()
             for _ek, _v in list(_pe.items()) + list(_ne.items()):
                 if _ek and _ek in text:
                     punct_emo += _v
-                    emoji_note.append(_ek)
+                    _seen_e.add(_ek)
+            # v1.7 Flash: emoji 判读升级 —— 不只数个数, 还读出"它是什么脸色、哪种情绪"
+            #   旧极性表没覆盖到的 emoji, 用判读表补一笔极性分(只补一次, 不重复计)。
+            for _ek, _pol, _mean in _emoji_read(text):
+                emoji_note.append("{}{}".format(_ek, _mean))
+                if _ek not in _seen_e:
+                    punct_emo += _pol * 0.8
         for t in tokens:
             if t in DATA.EMOTION_NEGATION:
                 neg_window = 2
@@ -1322,6 +1959,17 @@ class EmotionAnalyzer:
         pos_hits = [t for (t, c) in hits if c > 0]
         neg_hits = [t for (t, c) in hits if c < 0]
         intensity = sum(abs(c) for _, c in hits)
+        # v1.7 Flash: 网络梗也参与情绪分 —— "破防了 / 绝绝子 / 栓Q" 本身就带情绪色彩,
+        #   旧版不认识这些词, 情绪分恒为 0, 接梗自然接歪。
+        meme_hits = _meme_scan(text)
+        meme_pol = 0.0
+        for _me in meme_hits:
+            try:
+                meme_pol += float(_me.get("pol", 0) or 0)
+            except Exception:
+                pass
+        if meme_pol:
+            punct_emo += meme_pol
         # v0.6: 融入标点/emoji 加权与敏感度系数
         punct_emo = punct_emo * EMO_SENS
         score += punct_emo
@@ -1346,7 +1994,10 @@ class EmotionAnalyzer:
             "has_question": has_question,
             "has_anger": has_anger, "has_sad": has_sad, "has_fear": has_fear,
             "has_tired": has_tired, "has_joy": has_joy, "has_love": has_love,
-            "punct_emo": punct_emo, "emoji_note": emoji_note}
+            "punct_emo": punct_emo, "emoji_note": emoji_note,
+            "emoji_read": ["{}{}".format(_e, _m) for (_e, _p, _m) in _emoji_read(text)],
+            "meme_hits": [_me.get("name", "") for _me in meme_hits],
+            "meme_pol": round(meme_pol, 2)}
 
     def _classify(self, score, intensity, pos_count, neg_count,
                   has_anger, has_sad, has_fear, has_tired, has_joy, has_love, has_question):
@@ -1489,7 +2140,7 @@ class IntentDetector:
             persona_score += 2
         time_score = sum(1 for w in ["几点", "时间", "现在几点", "什么时候"] if w in raw)
         date_score = sum(1 for w in ["日期", "今天", "几号", "星期", "周几"] if w in raw)
-        # v1.7 Alpha: 天气词加权 —— "今天天气怎么样" 里 今天(date) 与 天气(weather) 各计 1 分,
+        # v1.7 Flash: 天气词加权 —— "今天天气怎么样" 里 今天(date) 与 天气(weather) 各计 1 分,
         #   旧版按字典序 tie-break 判成 date, 答成"今天是几号" → 天气问题被日期抢答。
         #   给天气词 2 倍权重, 天气类问题稳定压过日期类。
         weather_score = 2 * sum(1 for w in ["天气", "气温", "下雨", "温度", "预报"] if w in raw)
@@ -1526,7 +2177,7 @@ class IntentDetector:
             math_score += 3
         if any(w in raw for w in ["矩阵", "行列式", "行列", "det("]):
             math_score += 3
-        # —— v1.7 Alpha: 微积分 / 微分方程 判为数学(符号求导、积分、可分离变量 ODE) ——
+        # —— v1.7 Flash: 微积分 / 微分方程 判为数学(符号求导、积分、可分离变量 ODE) ——
         if any(w in raw for w in ["求导", "导数", "微分方程", "微分", "积分", "∫", "原函数",
                                   "不定积分", "定积分", "二阶导", "偏导", "d/dx", "dy/dx"]):
             math_score += 4
@@ -1694,7 +2345,7 @@ def _gelu(x):
 
 
 def _gelu_grad(x):
-    """v1.7 Alpha: GELU 的解析导数, 供反向传播使用(与 _gelu 同一条 tanh 近似式)."""
+    """v1.7 Flash: GELU 的解析导数, 供反向传播使用(与 _gelu 同一条 tanh 近似式)."""
     c = XP.sqrt(2.0 / XP.pi)
     u = c * (x + 0.044715 * x ** 3)
     t = XP.tanh(u)
@@ -1703,7 +2354,7 @@ def _gelu_grad(x):
 
 
 def _ln_backward(dout, x, gamma):
-    """v1.7 Alpha: LayerNorm 反向 (gamma 视为冻结常量, 只回传到输入 x)."""
+    """v1.7 Flash: LayerNorm 反向 (gamma 视为冻结常量, 只回传到输入 x)."""
     d = x.shape[-1]
     mean = x.mean(-1, keepdims=True)
     var = x.var(-1, keepdims=True)
@@ -1716,7 +2367,7 @@ def _ln_backward(dout, x, gamma):
 
 
 # ============================================================
-# v1.7 Alpha 核心升级: 优化器 + 反向传播 —— Transformer 初始权重不再固定
+# v1.7 Flash 核心升级: 优化器 + 反向传播 —— Transformer 初始权重不再固定
 #   · 关键子模块(输出头 / 深度门控 / 最后 N 层 FFN)保留 fp32 主权重, 参与真实梯度更新
 #   · 每轮对话用 AdamW 做若干步反向传播, 训练成果持久化, 越用越准
 #   · int8 常驻量化权重仍负责前向的大头算力, 训练只在 fp32 主权重上做 → 内存不涨
@@ -1732,7 +2383,7 @@ TRAIN_SAVE_EVERY = 3          # 每 N 轮对话把 fp32 主权重落盘一次(�
 TERMINATOR = "</s>"           # v1.7: 统一终止符 —— 训练序列用它分隔"问"与"答", 生成也收在它上
 NEST_TOK = 10                 # v1.7: 每层嵌套思考让 Transformer 自己想的词元数(CPU 速度与思考深度的平衡点)
 
-# v1.7 Alpha: 3B/4B 在纯 CPU 上的"稳跑"闸门 —— 模型越大, 训练切口越窄、单步序列越短、嵌套思考步数越省,
+# v1.7 Flash: 3B/4B 在纯 CPU 上的"稳跑"闸门 —— 模型越大, 训练切口越窄、单步序列越短、嵌套思考步数越省,
 #   确保只靠 CPU 也不溢出内存、不把一轮对话拖到几十秒。默认 2.4B 档时这三项维持原值不变。
 if MODEL_PARAMS >= 3_000_000_000:
     TRAIN_LAST_BLOCKS = 1     # 3B/4B: 只训最后 1 层 FFN 的低秩切口, fp32 主权重不膨胀
@@ -1744,7 +2395,7 @@ SCALE_NOTE = ("尺度天花板 = {} · 实选 {} · 参数量 ≈ {:.2f}B".forma
 
 
 class AdamW:
-    """v1.7 Alpha: 纯原生 AdamW 优化器 (一阶/二阶动量 + 偏差校正 + 解耦权重衰减)。
+    """v1.7 Flash: 纯原生 AdamW 优化器 (一阶/二阶动量 + 偏差校正 + 解耦权重衰减)。
     参数是设备端 fp32 主权重; 与 int8 量化权重分离, 训练在 fp32 上做, 前向照旧省内存。"""
     def __init__(self, lr=TRAIN_LR, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01):
         self.lr = float(lr)
@@ -1781,7 +2432,7 @@ class AdamW:
 
 
 class TrainBank:
-    """v1.7 Alpha: 可训练权重集合。把关键子模块从"固定常量"升级为"fp32 主权重 + 梯度"。
+    """v1.7 Flash: 可训练权重集合。把关键子模块从"固定常量"升级为"fp32 主权重 + 梯度"。
     保存训练步数 / 损失曲线, 供深度思考面板与冒烟测试展示"确实在学"。"""
     def __init__(self, lr=TRAIN_LR):
         self.opt = AdamW(lr)
@@ -2075,7 +2726,7 @@ class DeepThinkTransformer:
                 _l["W1"].move_dev(); _l["W2"].move_dev()
                 _l["b1"] = _to_dev(_l["b1"]); _l["b2"] = _to_dev(_l["b2"])
         # ============================================================
-        # v1.7 Alpha 核心升级: 权重不再固定 —— 可训练 fp32 主权重 + AdamW + 反向传播
+        # v1.7 Flash 核心升级: 权重不再固定 —— 可训练 fp32 主权重 + AdamW + 反向传播
         #   · out_adapter (d×d, 残差式): 直接改写"最后一跳"的词分布
         #   · gate (= _ffn_norm, d 维): 逐维调制深层表征
         #   · 最后 TRAIN_LAST_BLOCKS 层 FFN 的低秩修正 (A: d_ff×r, B: d×r): 真梯度回传到 FFN 通路
@@ -2106,7 +2757,7 @@ class DeepThinkTransformer:
         self.load_train_state()
 
     # ------------------------------------------------------------------
-    # v1.7 Alpha: 可训练前向 / 反向传播
+    # v1.7 Flash: 可训练前向 / 反向传播
     # ------------------------------------------------------------------
     def _block_forward_train(self, blk, i, x):
         """可训练层的前向(与冻结层同构, 额外叠加低秩 FFN 修正)。"""
@@ -2122,7 +2773,7 @@ class DeepThinkTransformer:
         return x1 + f, attn
 
     def _train_forward(self, ids):
-        """v1.7 Alpha: 训练专用前向 —— 缓存反向所需中间量(fp32)。
+        """v1.7 Flash: 训练专用前向 —— 缓存反向所需中间量(fp32)。
         返回 (x, cache): x 为 (seq, d) 的末层隐状态。"""
         seq = len(ids)
         embed_f = self.embed.val()
@@ -2146,7 +2797,7 @@ class DeepThinkTransformer:
         return x, cache
 
     def train_step(self, ids, targets):
-        """v1.7 Alpha: 一次真实的反向传播 + AdamW 更新。
+        """v1.7 Flash: 一次真实的反向传播 + AdamW 更新。
           ids/targets: 等长的 token id 序列(错位一个即 next-token 监督)。
           返回 {"loss":..., "gnorm":...} 或 None(关闭/无数据)。"""
         if not TRAIN_ENABLED or not self.bank or len(ids) < 2:
@@ -2224,7 +2875,7 @@ class DeepThinkTransformer:
         return "xiaofang_train_{}.npz".format(VERSION.split()[0].replace(".", ""))
 
     def dump_train_state(self):
-        """v1.7 Alpha: 把训练成果(主权重)落盘, 下次启动接着学 —— 越用越准。"""
+        """v1.7 Flash: 把训练成果(主权重)落盘, 下次启动接着学 —— 越用越准。"""
         if not self.bank:
             return False
         try:
@@ -2239,7 +2890,7 @@ class DeepThinkTransformer:
             return False
 
     def load_train_state(self):
-        """v1.7 Alpha: 启动时续上历史训练权重(有则加载, 无则用随机初始化)。"""
+        """v1.7 Flash: 启动时续上历史训练权重(有则加载, 无则用随机初始化)。"""
         try:
             import os as _os
             p = self._train_path()
@@ -2908,7 +3559,7 @@ def _abort():
 
 
 # ============================================================
-# v1.7 Alpha: 符号微积分引擎 (求导 / 积分 / 一阶微分方程)
+# v1.7 Flash: 符号微积分引擎 (求导 / 积分 / 一阶微分方程)
 #   纯自研, 不走数值逼近: 词法 → 递归下降语法 → 符号 AST → 符号微分/积分 → 化简 → 排版
 #   覆盖: 多项式与负幂、sin cos tan asin acos atan sinh cosh、exp/ln/log/sqrt/abs、
 #         积法则、商法则、链式法则; 微分方程覆盖"直接积分型 / 可分离变量型 / 指数增长型"
@@ -3147,7 +3798,7 @@ def _sym_simplify(n):
             return ("neg", a)
         if a[0] != "num" and b[0] == "num":
             a, b = b, a
-        # v1.7 Alpha: c·(u/d) → (c·u)/d, 便于常数因子约分 (如 2·(x^2/2) → x^2)
+        # v1.7 Flash: c·(u/d) → (c·u)/d, 便于常数因子约分 (如 2·(x^2/2) → x^2)
         if a[0] == "num" and b[0] == "div":
             return _sym_simplify(("div", ("mul", a, b[1]), b[2]))
         return ("mul", a, b)
@@ -3163,7 +3814,7 @@ def _sym_simplify(n):
             return a
         if a == b:
             return ("num", 1.0)
-        # v1.7 Alpha: 常数因子约分 (c·u)/d → (c/d)·u, 如 2*x^2/2 → x^2
+        # v1.7 Flash: 常数因子约分 (c·u)/d → (c/d)·u, 如 2*x^2/2 → x^2
         if a[0] == "mul" and b[0] == "num" and abs(b[1]) > 1e-15:
             if a[1][0] == "num":
                 q, u = a[1][1], a[2]
@@ -3173,7 +3824,7 @@ def _sym_simplify(n):
                 q = u = None
             if u is not None:
                 return _sym_simplify(("mul", ("num", q / b[1]), u))
-        # v1.7 Alpha: 叠分数 a / (b/c) → (a·c)/b
+        # v1.7 Flash: 叠分数 a / (b/c) → (a·c)/b
         if b[0] == "div":
             return _sym_simplify(("div", ("mul", a, b[2]), b[1]))
         return ("div", a, b)
@@ -3493,7 +4144,7 @@ class MathResponder:
             return True
         if re.search(r"\[\[", raw) or any(w in raw for w in ["矩阵", "行列式", "行列"]):
             return True
-        # v1.7 Alpha: 微积分(求导/积分/微分方程)判为数学 —— 交给符号引擎(_calc_route)。
+        # v1.7 Flash: 微积分(求导/积分/微分方程)判为数学 —— 交给符号引擎(_calc_route)。
         if any(w in raw for w in ["求导", "导数", "微分方程", "微分", "积分", "∫", "原函数", "不定积分",
                                   "定积分", "二阶导", "偏导", "d/dx", "dy/dx"]):
             return True
@@ -3940,7 +4591,7 @@ class MathResponder:
         return "🧮 计算 {} 得 **{}**（按数学规则求解）。".format(expr, disp)
 
     # ============================================================
-    # v1.7 Alpha: 微积分路由 (求导 / 积分 / 一阶微分方程)
+    # v1.7 Flash: 微积分路由 (求导 / 积分 / 一阶微分方程)
     # ============================================================
     CALC_KW = ("求导", "导数", "微分", "积分", "∫", "原函数", "dy/dx", "d/dx")
 
@@ -4150,7 +4801,7 @@ class MathResponder:
     def answer(self, raw):
         if not self.detect(raw):
             return None
-        # v1.7 Alpha: 微积分(求导/积分/微分方程)抢先处理 —— 微分方程右端也含 "=",
+        # v1.7 Flash: 微积分(求导/积分/微分方程)抢先处理 —— 微分方程右端也含 "=",
         #   若不抢先, 会被下面的"变量方程"分支误当普通代数方程解出错误答案。
         calc = self._calc_route(raw)
         if calc:
@@ -4162,7 +4813,7 @@ class MathResponder:
             if mres:
                 return mres
         # v1.5 正式版: 多元一次方程组 (高斯消元)
-        # v1.7 Alpha: 放宽触发条件 —— 旧版只认 "方程组/元一次" 字样, 于是
+        # v1.7 Flash: 放宽触发条件 —— 旧版只认 "方程组/元一次" 字样, 于是
         #   "解方程 2x+3y=12, x-y=1" 这种没写"方程组"的多元题会漏掉, 一路掉到联网搜索。
         #   现在: 只要出现 ≥2 条含字母的等式, 或等式里凑齐 ≥2 个未知数, 就交给高斯消元。
         _multi_eq = False
@@ -4247,7 +4898,7 @@ class CodeResponder:
         ("lua", "Lua"), ("r语言", "R"), ("matlab", "MATLAB"),
         ("sql", "SQL"), ("bash", "Shell"), ("shell", "Shell"),
     ]
-    # v1.7 Alpha: "泛化写码" 的触发词 —— 旧版只认"写代码/写程序", 于是
+    # v1.7 Flash: "泛化写码" 的触发词 —— 旧版只认"写代码/写程序", 于是
     #   "用 JavaScript 写一个防抖函数" 这种自然说法判不出代码意图, 一路返回 None。
     _GEN_KWS = ["写代码", "写个代码", "写程序", "写个程序", "帮我写", "帮我实现", "写一段",
                 "写一个", "写个", "写一下", "实现一个", "实现个", "编写", "脚本", "代码", "编程", "实现"]
@@ -4412,7 +5063,7 @@ class CodeResponder:
             "Python": "ages = {\"小方\": 5, \"小明\": 12}\nages[\"小红\"] = 11               # 增\nages[\"小方\"] = 6                # 改\nprint(ages.get(\"小李\", 0))       # 查(键不存在给默认, 不报错)\nfor name, age in ages.items():  # 遍历\n    print(name, age)\nprint(\"小李\" in ages)           # 判断键存在",
             "JavaScript": "const ages = { \"小方\": 5, \"小明\": 12 };\nages[\"小红\"] = 11;                    // 增\nages[\"小方\"] = 6;                     // 改\nconsole.log(ages[\"小李\"] ?? 0);       // 查(空值合并给默认)\nfor (const [name, age] of Object.entries(ages)) console.log(name, age);\nconsole.log(\"小李\" in ages);          // 判断键存在"},
          "exp": "思路：字典是「键→值」映射，查找 O(1)。get(..., 默认)/?? 能避免键不存在时报错，那是新手最常见的崩溃点。"},
-        # v1.7 Alpha 新增: 防抖/节流 —— 前端高频痛点, 以前问它会被判成"泛化写码"甚至返回空
+        # v1.7 Flash 新增: 防抖/节流 —— 前端高频痛点, 以前问它会被判成"泛化写码"甚至返回空
         {"kws": ["防抖", "debounce", "节流", "throttle", "搜索框联想"],
          "title": "防抖 / 节流", "langs": "JS/Python",
          "code": {
@@ -4642,11 +5293,36 @@ class CodeResponder:
                     best, best_len = t, len(k)
         return best
 
+    # v1.7 Flash: "写一个 X" 必须 X 真落在【编程域】里才算代码意图。
+    #   旧版只认 _GEN_KWS(含"写一个/帮我写"), 于是"写一个鹈鹕骑自行车""写一段心里话"
+    #   全被判成写代码 —— 这是用户投诉"注意力不集中、答非所问"的头号元凶。
+    _PROG_DOMAIN = [
+        "代码", "程序", "脚本", "函数", "lambda", "算法", "循环", "排序", "查找", "递归",
+        "类", "对象", "接口", "继承", "多态", "模块", "代码库", "框架", "爬虫", "正则",
+        "数组", "列表", "字典", "元组", "集合", "字符串", "哈希", "栈", "队列", "链表", "树",
+        "堆", "报错", "异常", "调试", "debug", "bug", "日志", "api", "json", "xml",
+        "数据库", "sql", "mysql", "redis", "服务器", "线程", "进程", "协程", "并发", "异步",
+        "文件", "读写", "网络", "请求", "http", "socket", "界面", "gui", "窗口", "按钮",
+        "计算器", "小工具", "命令行", "登录", "注册", "校验", "加密", "解密", "部署",
+        "防抖", "节流", "单例", "工厂模式", "观察者", "贪吃蛇", "扫雷", "俄罗斯方块",
+        "汉诺塔", "迷宫", "数独", "井字棋", "五子棋", "打砖块", "飞机大战", "推箱子",
+    ]
+
+    def _in_prog_domain(self, raw, low=None):
+        """v1.7 Flash: 这句请求是否踩在【编程域】上(点名的语言 / 命中的算法任务 / 编程词)。"""
+        low = low if low is not None else (raw or "").lower()
+        if self._best_task(low):
+            return True
+        if self._detect_lang(raw):
+            return True
+        return any(k in low for k in self._PROG_DOMAIN)
+
     def detect(self, raw):
         low = (raw or "").lower()
         if self._best_task(low):
             return True
-        if any(k in low for k in self._GEN_KWS):
+        # v1.7 Flash: 泛化"写一个…"必须同时踩到编程域 —— 否则不算代码意图(交给创作/画面路由)
+        if any(k in low for k in self._GEN_KWS) and self._in_prog_domain(raw, low):
             return True
         lang = self._detect_lang(raw)
         if lang and any(k in low for k in ["语法", "速查", "怎么学", "怎么写"]):
@@ -4737,6 +5413,7 @@ class SelfLearner:
         self.retriever = retriever
         self.learned_words = 0
         self.learned_defs = 0
+        self.last_fact = None      # v1.7 Flash: 本轮是否新记住一条"关于用户的事实"
         self._known_titles = set(getattr(DATA, "KNOWN_TITLES", []))
         for d in getattr(self.retriever, "docs", []):
             try:
@@ -4779,6 +5456,17 @@ class SelfLearner:
             w = m.group(0).lower()
             if w not in known and self._plausible(w):
                 cands.add(w)
+        # v1.7 Flash: 同句里重复出现的双字组合 → 更可能是真术语(而非偶然相邻的虚字), 一并学习。
+        #   只统计"这一句之内", 不留额外状态, 单条消息开销极小(渣机无感)。
+        _bg = {}
+        for seg in re.findall(r"[\u4e00-\u9fff]+", text):
+            for i in range(len(seg) - 1):
+                g = seg[i:i + 2]
+                _bg[g] = _bg.get(g, 0) + 1
+        for g, c in _bg.items():
+            if c >= 2 and len(g) == 2 and g not in known and self._plausible(g) \
+                    and not all(ch in self._NOISE for ch in g):
+                cands.add(g)
         return sorted(cands)
 
     def _extract_definition(self, text, fresh_cands=None):
@@ -4787,6 +5475,8 @@ class SelfLearner:
         避免先 add_words 后把刚学的词误判为"已认识"而跳过."""
         pats = [
             re.compile(r"([\u4e00-\u9fffA-Za-z]{2,12}(?:[\u4e00-\u9fffA-Za-z0-9· ]{0,2}))(?:的)?(?:的意思是|是用于|是指|意指|就是指|解释为|即|表示|意为)\s*[:：]?\s*([^\n。;；]{2,60})"),
+            # v1.7 Flash: 补一批"也等于在解释"的说法, 少漏知识
+            re.compile(r"([\u4e00-\u9fffA-Za-z]{2,12})(?:的)?(?:全称是|简称是|缩写为|缩写是|俗称|又叫|也叫做|也被称为|被称为|指的是)\s*[:：]?\s*([^\n。;；]{2,60})"),
             re.compile(r"([A-Za-z][A-Za-z ]{1,15})\s*:\s*([^\n。;；]{2,60})", re.I),
         ]
         for pat in pats:
@@ -4836,6 +5526,8 @@ class SelfLearner:
             if getattr(self, "memory", None):
                 self.memory.note_def(term, meaning)
         if getattr(self, "memory", None):
+            # v1.7 Flash: 长期事实记忆 —— 顺手记住"用户是谁 / 在意什么"（跨会话不忘）
+            self.last_fact = self.memory.note_fact(text)
             # v0.7: 每次学完即"学新词淘汰旧词"并落盘, 记忆有界不拖内存
             self.memory.commit()
         return len(add), (1 if defs else 0)
@@ -4874,14 +5566,16 @@ class LearnerMemory:
                      "xiaofang_memory_v10.json", "xiaofang_memory_v09alpha.json",
                      "xiaofang_memory_v08pro.json", "xiaofang_memory_v08.json",
                      "xiaofang_memory_v07.json")  # 旧记忆自动迁移, 不丢已学内容
-    MAX_WORDS = 2000          # 学到生词上限(基础常用词永不淘汰)
-    MAX_KNOW = 800            # 学到释义摘要上限
+    MAX_WORDS = 3200          # v1.7 Flash: 生词上限 2000→3200(纯小字典条目, 内存开销可忽略)
+    MAX_KNOW = 1400           # v1.7 Flash: 释义上限 800→1400(只存 40 字摘要, 渣机无压力)
+    MAX_FACTS = 240           # v1.7 Flash: 长期事实(用户是谁/在意什么)上限
     _NOISE = set("的了是在我不有和这那与就也都而或及之很都太更最也吧吗呢啊哦呀啦吧么嘛嗯哈嘿嘻嘻啦啦哦耶哇哎")
 
     def __init__(self, tok=None):
         self.tok = tok
         self.words = {}       # w -> {"n": 出现次数, "last": 最近使用游标}
         self.know = {}        # title -> {"s": 摘要, "v": 价值分, "n": 次数, "last": 游标}
+        self.facts = {}       # "类别:内容" -> {"k": 类别, "v": 内容, "n": 次数, "last": 游标}
         self._seq = 0         # 单调递增 LRU 游标
         self._base_words = set()
         self._known_titles = set()
@@ -4930,6 +5624,18 @@ class LearnerMemory:
                     self.know[t] = {"s": str(e.get("s", "")), "v": float(e.get("v", 1.0)),
                                     "n": int(e.get("n", 1)), "last": int(e.get("last", 0))}
             self._seq = data.get("seq", 0) or 0
+            # v1.7 Flash: 长期事实记忆 —— 用户是谁 / 在意什么, 跨会话不忘
+            fa = data.get("facts", {})
+            if isinstance(fa, dict):
+                for key, v in fa.items():
+                    if not isinstance(key, str) or not key:
+                        continue
+                    e = v if isinstance(v, dict) else {}
+                    val = str(e.get("v", ""))
+                    if not val:
+                        continue
+                    self.facts[key] = {"k": str(e.get("k", "")), "v": val,
+                                       "n": int(e.get("n", 1)), "last": int(e.get("last", 0))}
             if migrated:                                  # 迁移成功 → 立即写入新版文件
                 self._dirty = True
                 self._save()
@@ -4940,7 +5646,7 @@ class LearnerMemory:
         p = self._mem_path()
         try:
             data = {"version": VERSION, "seq": self._seq,
-                    "words": self.words, "know": self.know}
+                    "words": self.words, "know": self.know, "facts": self.facts}
             tmp = p + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
@@ -5017,6 +5723,66 @@ class LearnerMemory:
         self._dirty = True
         return True
 
+    # ---------- v1.7 Flash: 长期事实记忆 (自学习深度加深) ----------
+    #   旧版只学"生词 + 词条释义", 记不住"用户是谁、在意什么";
+    #   这里从用户话里抽短事实(不存原文), 有界、去重、可跨会话回忆。
+    _FACT_PATS = (
+        ("称呼", re.compile(r"我(?:的名字)?(?:叫|是)\s*([\u4e00-\u9fffA-Za-z0-9_]{2,12})")),
+        ("喜好", re.compile(r"我(?:最|很|超|特别)?(?:喜欢|爱|偏爱|讨厌|不喜欢)\s*([^\n。，,；;！!？?]{2,16})")),
+        ("所在", re.compile(r"我(?:现在)?(?:住在|在)\s*([\u4e00-\u9fff]{2,10})(?:工作|上班|上学|读书|生活|住)")),
+        ("身份", re.compile(r"我(?:是一名|是个|是位|做)\s*([^\n。，,；;！!？?]{2,16})")),
+        ("目标", re.compile(r"我(?:想要|打算|计划|准备)\s*([^\n。，,；;！!？?]{2,16})")),
+    )
+    _FACT_STOP = ("不是", "在问", "想说", "觉得", "认为", "看看", "听", "说", "问",
+                  "想不", "不懂", "不会", "没", "不", "要问", "先", "再", "还",
+                  "也", "是来", "就是", "只是", "已经")
+
+    def _evict_facts(self):
+        if len(self.facts) <= self.MAX_FACTS:
+            return 0
+        over = len(self.facts) - self.MAX_FACTS
+        ranked = sorted(self.facts.items(),
+                        key=lambda kv: (kv[1]["n"], kv[1]["last"]))
+        for key, _ in ranked[:over]:
+            self.facts.pop(key, None)
+        return over
+
+    def note_fact(self, text):
+        """从用户这句里抽一条"关于他自己的事实"并记住。返回 (类别, 内容) 或 None。
+        只在陈述句里抽(问句不算), 只存 2~16 字短事实, 不存原句。"""
+        t = (text or "").strip()
+        if not t or len(t) > 200 or ("?" in t) or ("？" in t):
+            return None
+        for kind, pat in self._FACT_PATS:
+            m = pat.search(t)
+            if not m:
+                continue
+            val = (m.group(1) or "").strip(" 的了呀啊吧呢嘛哈~～!！。")
+            if len(val) < 2 or len(val) > 16:
+                continue
+            if val.startswith(self._FACT_STOP):
+                continue
+            key = kind + ":" + val
+            self._seq += 1
+            e = self.facts.get(key)
+            if e:
+                e["n"] += 1
+                e["last"] = self._seq
+                self._dirty = True
+                return None            # 已经记过, 只加固不重复报
+            self.facts[key] = {"k": kind, "v": val, "n": 1, "last": self._seq}
+            self._evict_facts()
+            self._dirty = True
+            return (kind, val)
+        return None
+
+    def facts_brief(self, limit=6):
+        """把记得的长期事实压成一行短话(供问候/回忆用)。没有就返回空串。"""
+        if not self.facts:
+            return ""
+        items = sorted(self.facts.values(), key=lambda e: (-e["n"], -e["last"]))[:limit]
+        return "、".join("{}={}".format(e["k"], e["v"]) for e in items)
+
     # ---------- 价值打分 (③只存有价值的段落摘要) ----------
     def _value(self, term, summ, n):
         v = 1.0
@@ -5074,13 +5840,16 @@ class LearnerMemory:
     def clear_all(self):
         self.words.clear()
         self.know.clear()
+        self.facts.clear()
         self._known_titles = set(self._known_titles) - set(self.know)
         self._dirty = True
         self._save()
 
     def stats(self):
         return {"words": len(self.words), "know": len(self.know),
-                "max_words": self.MAX_WORDS, "max_know": self.MAX_KNOW}
+                "facts": len(self.facts),
+                "max_words": self.MAX_WORDS, "max_know": self.MAX_KNOW,
+                "max_facts": self.MAX_FACTS}
 
 
 class XiaoFang:
@@ -5151,7 +5920,7 @@ class XiaoFang:
         self.last_web = None
         self.last_web_reason = ""
         self.last_web_backend = ""
-        # v1.7 Alpha: 多轮投稿 —— 记住上一版作文/代码, 用户说「再改改 / 换算法 / 加长」时接着改
+        # v1.7 Flash: 多轮投稿 —— 记住上一版作文/代码, 用户说「再改改 / 换算法 / 加长」时接着改
         self.last_essay = None
         self.last_code = None
         self.last_kind = None
@@ -5381,7 +6150,7 @@ class XiaoFang:
         for tok, p in top5:
             parts.append("       P({})={}".format(tok, _fmt(p)))
         parts.append("  合并 n-gram 语料先验 → 决策候选: 「{}」 P={}".format(best_tok, _fmt(best_prob)))
-        # v1.7 Alpha: 把"权重不再固定"这件事显性化 —— 优化器 + 反向传播的实况
+        # v1.7 Flash: 把"权重不再固定"这件事显性化 —— 优化器 + 反向传播的实况
         _tb = self._train_brief()
         if _tb:
             parts.append("【④+ 优化器与反向传播 (v1.7 可训练权重)】")
@@ -5389,7 +6158,7 @@ class XiaoFang:
                          .format(TRAIN_LR, TRAIN_LAST_BLOCKS))
             parts.append("  " + _tb)
             parts.append("  近步 loss 曲线: " + self._train_hist_line())
-        # ── v1.7 Alpha 核心: 两层嵌套深度思考, 全部由 Transformer 本体逐词生成, 每层各验算一次 ──
+        # ── v1.7 Flash 核心: 两层嵌套深度思考, 全部由 Transformer 本体逐词生成, 每层各验算一次 ──
         #   第①层想(嵌入→多头自注意力→FFN→logits→softmax→top-p 采样, 撞上 </s> 收尾)
         #     → 验算①(意图贴合度 cos / 分布置信度 / 注意力落点)
         #     → 把①层思考 + 纠偏意见再喂回同一个 Transformer
@@ -5452,7 +6221,7 @@ class XiaoFang:
         return "\n".join(mono + parts + tail)
 
     # ══════════════════════════════════════════════════════════════════════
-    # v1.7 Alpha · 两层嵌套深度思考 (全部由 Transformer 本体生成 + 每层一次验算)
+    # v1.7 Flash · 两层嵌套深度思考 (全部由 Transformer 本体生成 + 每层一次验算)
     #   第①层思考: 嵌入 → 多头自注意力 → FFN → logits → softmax → top-p 采样,
     #               逐词生成(不是模板); 遇到终止符 </s> 收尾。
     #   验算①: 用同一个 Transformer 给这段思考算【意图贴合度(余弦) + 分布置信度(归一化熵)
@@ -5461,7 +6230,7 @@ class XiaoFang:
     #   验算②: 再验一次, 双验通过才真正给答案 —— 这就是"嵌套两层"。
     # ══════════════════════════════════════════════════════════════════════
     def _tf_think(self, seed_text, bias_extra="", n_tok=26, temp=0.88):
-        """v1.7 Alpha: 由 Transformer 本体逐词生成的思考片段(嵌入→注意力→FFN→softmax→采样)。
+        """v1.7 Flash: 由 Transformer 本体逐词生成的思考片段(嵌入→注意力→FFN→softmax→采样)。
         返回 dict: text / top1 / cos / conf / entropy / attn_peak / attn_tok / ids。"""
         tr = self.transformer
         seed = self.tokenizer.tokenize(seed_text or "")[:SEED_TOKENS] or ["好"]
@@ -5504,7 +6273,7 @@ class XiaoFang:
                 "attn_peak": attn_peak, "attn_tok": attn_tok, "ids": ids}
 
     def _tf_verify(self, thought, intent, layer=1):
-        """v1.7 Alpha: 验算层 —— 用同一套 Transformer 指标判定该层思考是否"想对了"。
+        """v1.7 Flash: 验算层 —— 用同一套 Transformer 指标判定该层思考是否"想对了"。
         返回 dict: ok / cos / conf / attn_tok / hint(给下一层的纠偏提示) / line(可读结论)。"""
         cos = float(thought.get("cos", 0.0))
         conf = float(thought.get("conf", 0.0))
@@ -5529,7 +6298,7 @@ class XiaoFang:
 
     def _nested_monologue(self, user_input, t1, v1, t2, v2, intent, web_should,
                           emo, kb_hits, kb_top, kb_score, detail, strategies):
-        """v1.7 Alpha: 内心独白不再套模板 —— 正文就是 Transformer 本体①/②层逐词采样出来的字,
+        """v1.7 Flash: 内心独白不再套模板 —— 正文就是 Transformer 本体①/②层逐词采样出来的字,
         这里只加"串场"的人话外壳; 万一两层都没采出成句, 才退回旧的意图独白兜底(不让用户看到空白)。"""
         def _txt(d):
             s = (d.get("text") or "").strip()
@@ -5629,7 +6398,7 @@ class XiaoFang:
             mono.append("拿定了——用最顺的表达把答案送出去。")
         return mono
 
-    # v1.7 Alpha: 问"小方自己/作者/用什么做的/什么框架" → 本地答, 绝不联网(不曲解)
+    # v1.7 Flash: 问"小方自己/作者/用什么做的/什么框架" → 本地答, 绝不联网(不曲解)
     _SELF_ASK = ["是什么框架", "什么框架", "用什么做", "用什么写", "用什么开发", "什么语言写",
                  "用什么写得", "用的什么", "用什么模型", "什么模型",
                  "作者是谁", "谁做的", "谁开发", "谁创造",
@@ -5657,7 +6426,7 @@ class XiaoFang:
         # ⚠ 凡是问"小方自己/作者/用什么做的/什么框架/小方工作室" → 本地答, 绝不联网(不曲解)
         if self._is_self_ask(t):
             return False
-        # v1.7 Alpha: 代码类诉求 → 自动联网, 且检索加权 GitHub/Gitee/CSDN 等开发者平台
+        # v1.7 Flash: 代码类诉求 → 自动联网, 且检索加权 GitHub/Gitee/CSDN 等开发者平台
         if self._is_code_query(t):
             return True
         if intent and intent.get("top") in ("search", "weather"):
@@ -5684,7 +6453,7 @@ class XiaoFang:
         # v0.4Search: 自主判断是否联网 (联网过程内置于深度思考)
         if FORCE_OFFLINE:
             return False
-        # v1.7 Alpha: 自家/工作室情报只走本地精准靶向 —— 网上根本查不到, 联网只会答歪,
+        # v1.7 Flash: 自家/工作室情报只走本地精准靶向 —— 网上根本查不到, 联网只会答歪,
         #   所以这里直接短路, 不参与后面的"低置信概念题自动联网"判定。
         if self._is_self_ask(text):
             self.last_web_reason = "self_local"
@@ -5710,7 +6479,7 @@ class XiaoFang:
         # 自我意图理解: 问"是什么/怎么/如何/介绍" 且本地知识库置信低 → 自动上网
         # v1.6 修正: 原先还要求 emo["has_question"], 可"什么是X？"这种问法 has_question 并不置位,
         #   结果"库里没有的概念题"全被吞成 db_enough、不上网 → 违背"库里没有就上网"。改看问句特征词本身。
-        # v1.7 Alpha: 全局自动联网 —— 概念题之外, 再把"谁/哪年/什么时候/多少/哪里/为什么"这类
+        # v1.7 Flash: 全局自动联网 —— 概念题之外, 再把"谁/哪年/什么时候/多少/哪里/为什么"这类
         #   事实型提问一并纳入; 用户不必说"搜一下", 该查就自己查。
         _concept_q = any(m in text for m in ["是什么", "什么是", "什么意思", "怎么样", "怎么",
                                              "如何", "怎样", "介绍", "原理", "起源", "区别", "在哪",
@@ -5817,7 +6586,7 @@ class XiaoFang:
                 break
         return results
 
-    # v1.7 Alpha: 代码类检索加权 —— 收到写代码/报错/API 这类诉求时,
+    # v1.7 Flash: 代码类检索加权 —— 收到写代码/报错/API 这类诉求时,
     #   不能一味只翻百度必应, 要优先命中开发者平台(GitHub / Gitee / CSDN / Stack Overflow / GitCode)。
     _CODE_HINT = [
         "代码", "程序", "函数", "脚本", "报错", "错误", "异常", "bug", "debug", "调试",
@@ -5832,14 +6601,14 @@ class XiaoFang:
     ]
 
     def _is_code_query(self, text):
-        """v1.7 Alpha: 判断是不是代码/技术类诉求 —— 是的话检索要加权开发者平台。"""
+        """v1.7 Flash: 判断是不是代码/技术类诉求 —— 是的话检索要加权开发者平台。"""
         t = (text or "").lower()
         if not t:
             return False
         return any(k in t for k in self._CODE_HINT)
 
     def _code_site_search(self, query, max_results=5):
-        """v1.7 Alpha: 代码类检索加权 —— 依次用 site: 限定 GitHub/Gitee/CSDN 等开发者平台。
+        """v1.7 Flash: 代码类检索加权 —— 依次用 site: 限定 GitHub/Gitee/CSDN 等开发者平台。
         命中即带 site 标签返回, 让"进网页看正文"落在真正的源码 / 问答 / 教程页上。"""
         try:
             import requests
@@ -5883,7 +6652,7 @@ class XiaoFang:
 
     def _fetch_web(self, query, max_results=5, code=None):
         # v1.6 检索修复 ②: 先后端顺序 = 必应(直达链接, 能进网页取正文) → 百度 → ddgs 各后端。
-        # v1.7 Alpha: 代码类查询先走开发者平台加权(GitHub/Gitee/CSDN/Stack Overflow/GitCode), 再回落通用后端。
+        # v1.7 Flash: 代码类查询先走开发者平台加权(GitHub/Gitee/CSDN/Stack Overflow/GitCode), 再回落通用后端。
         # v1.3 Alpha 卡死防呆: 整段网络放在守护线程硬超时里跑。
         _code = self._is_code_query(query) if code is None else code
 
@@ -6027,6 +6796,37 @@ class XiaoFang:
         except Exception:
             return results
 
+    def _tf_integrate(self, query, sents, emo=None):
+        """v1.7 Flash: 把网页抠出来的句子「回灌 Transformer」再整合一遍。
+
+        对每一句做一次前向: 看模型觉得"这句话接在用户问题后面"有多顺(自回归概率),
+        据此重排 —— 于是网页只当原料, 最终由模型口径决定先说什么、后说什么。
+        返回 (ranked, trace): ranked 为 [(prob, 句子)] 由顺到逆; trace 为一行可展示的整合说明。
+        """
+        tr = getattr(self, "transformer", None)
+        if tr is None or not sents:
+            return [], ""
+        seed = self.tokenizer.tokenize(query or "")[:SEED_TOKENS]
+        rows = []
+        for s in sents:
+            ids = [tr.token2id.get(t, 0) for t in (seed + self.tokenizer.tokenize(s))]
+            ids = ids[-TRAIN_MAX_SEQ:]
+            if len(ids) < 2:
+                continue
+            try:
+                _probs, _ = tr.forward(ids[:-1])
+                p = float(_probs[ids[-1]])      # 该句末词在"问题上下文"下的模型概率
+            except Exception:
+                p = 0.0
+            rows.append((p, s))
+        if not rows:
+            return [], ""
+        top = max(p for p, _s in rows) or 1.0
+        rows.sort(key=lambda x: (-x[0], len(x[1])))   # 越顺越靠前; 同分取更凝练的
+        trace = ("检索到的 {} 句已回灌 Transformer 重排整合：最顺的一句自回归概率 {:.4f}（相对 {:.2f}）"
+                 .format(len(rows), rows[0][0], rows[0][0] / top))
+        return rows, trace
+
     def search_and_integrate(self, query, emo):
         # v0.4Search: 优先复用思考内已检索的结果, 否则立即联网; RAG 式整合
         web = getattr(self, "last_web", None)
@@ -6064,12 +6864,8 @@ class XiaoFang:
             pass
         # v1.6 检索修复 ④: 把网页抠出来的字和"用户问的问题"对齐, 按相关度挑句再整合 —— 不无脑拼接
         q = (query or "").strip()
-        q_bg = set()
-        for _i in range(len(q) - 1):
-            _bg = q[_i:_i + 2]
-            if re.match(r"^[\u4e00-\u9fff]{2}$", _bg):
-                q_bg.add(_bg)
-        cand, seen_s = [], set()
+        # 先把抠出来的正文切成去重后的候选句
+        seen_s, sents = set(), []
         for rt in result_texts:
             for s in _split_sents(rt):
                 s = s.strip(" ")
@@ -6079,28 +6875,49 @@ class XiaoFang:
                 if key in seen_s:
                     continue
                 seen_s.add(key)
-                hit = sum(1 for bg in q_bg if bg in s)
-                cand.append((hit, s))
-        cand.sort(key=lambda x: -x[0])                # 相关度高的排前, 同分保持网页原序
-        picked = [s for _h, s in cand[:7]]
-        # 句子之间补句读, 不能糊成一坨
-        buf = []
+                sents.append(s)
+        # ── v1.7 Flash: 网页结果先回灌 Transformer 整合一遍, 再决定说什么 ──────
+        #   旧版把 DDG 挑出来的句子直接拼给用户(用户原话:"直接把 DDG 的结果展示给用户")。
+        #   现在每句都过一遍模型前向、按"接在用户问题后面有多顺"重排, 网页只当料不当成品。
+        ranked, tf_trace = self._tf_integrate(q, sents, emo)
+        if ranked:
+            picked = [s for _p, s in ranked[:6]]
+        else:
+            # Transformer 不可用时退回二维相关度挑句(仍不裸贴, 后面照样组织成要点)
+            q_bg = set(q[i:i + 2] for i in range(len(q) - 1)
+                       if re.match(r"^[\u4e00-\u9fff]{2}$", q[i:i + 2]))
+            cand = sorted(((sum(1 for bg in q_bg if bg in s), s) for s in sents),
+                          key=lambda x: -x[0])
+            picked = [s for _h, s in cand[:6]]
+        if not picked:
+            picked = [result_texts[0][:80]]
+        # 组织成要点(最多 4 条), 每条掐短 —— 让小方"讲给用户听", 而不是甩原文
+        bullets = []
         for s in picked:
-            if buf and not buf[-1].endswith(("。", "！", "？", "…", "；", "，", "、")):
-                buf.append("。")
-            buf.append(s)
-        gen_text = "".join(buf) if buf else result_texts[0][:80]
-        gen_text = self.generator._insert_emojis(gen_text, emo)
+            s2 = re.sub(r"\s+", " ", s).strip()
+            if len(s2) > 62:
+                s2 = s2[:62].rstrip("，,、;；") + "…"
+            if s2 and s2 not in bullets:
+                bullets.append(s2)
+            if len(bullets) >= 4:
+                break
         # 用"真抓到正文的那条"当出处, 更名副其实
         top = next((r for r in results if r.get("page")), results[0])
         src = top.get("href") or top.get("url", "")
         got_page = sum(1 for r in results if r.get("page"))
         head = "我进网页读过了" if got_page else "我从网上查到"
-        answer = "{}（{}）：{}".format(head, top.get("title", "")[:24], gen_text)
+        lines = ["{}（{}），让模型重排整合了一遍：".format(head, top.get("title", "")[:24]), ""]
+        for i, b in enumerate(bullets, 1):
+            lines.append("- {}".format(b))
+        if tf_trace:
+            lines += ["", "> {}".format(tf_trace)]
         if src:
-            answer += "（来源：{}）".format(src)
+            lines += ["", "来源：{}".format(src)]
         opener = random.choice(["不过网上的信息你可以再核对下。", "如果需要，我可以继续帮你查更细的。"])
-        return _normalize_emoji(answer + opener + learn_extra)   # v1.2: 收敛网页混入的乱插 emoji
+        out = "\n".join(lines) + "\n" + opener
+        if learn_extra:
+            out += "\n" + learn_extra
+        return _normalize_emoji(out)   # v1.2: 收敛网页混入的乱插 emoji
 
     def _is_recommend(self, text):
         # v1.0 Pro: 是否"要推荐/拿主意"类 —— 这类只该给"有哪些选项", 绝不能去翻库解释"某东西是什么"
@@ -6501,7 +7318,7 @@ class XiaoFang:
         return "📋 {}\n{}\n{}".format(question, kind, "\n".join(lines))
 
     # ===============================================================
-    # v1.7 Alpha: 多轮投稿 —— 作文 / 代码接着上一版迭代, 不重复输出同一份原文
+    # v1.7 Flash: 多轮投稿 —— 作文 / 代码接着上一版迭代, 不重复输出同一份原文
     # ===============================================================
     _REVISE_KWS = ["再改改", "改改", "改一下", "再改", "换个角度", "换一个角度", "换角度",
                    "换个算法", "换算法", "加长", "写长", "长一点", "写短", "短一点",
@@ -6509,7 +7326,7 @@ class XiaoFang:
                    "优化一下", "再优化", "加个功能", "加功能", "润色", "扩写", "缩写",
                    "换个说法", "重写一下", "再润色", "加一段", "删掉", "去掉", "改进一下",
                    "换一种", "再深入", "深化一下", "精炼一下",
-                   # v1.7 Alpha: 补自然改法(用户口语: 改成/改为/换成/加注释/迭代/递归 ...)
+                   # v1.7 Flash: 补自然改法(用户口语: 改成/改为/换成/加注释/迭代/递归 ...)
                    "改成", "改为", "换成", "换用", "加注释", "注释一下", "写注释", "补注释",
                    "去掉注释", "迭代版", "递归版", "非递归", "用栈", "别用递归",
                    "详细点", "详细一点", "更详细", "简单点", "简单一点", "精简", "压缩一下",
@@ -6583,7 +7400,7 @@ class XiaoFang:
         return None
 
     # ===============================================================
-    # v1.7 Alpha: 小方工作室「精准靶向」本地路由
+    # v1.7 Flash: 小方工作室「精准靶向」本地路由
     #   规则: 自家资料只走本地库 (STUDIO_LOCAL_ONLY), 绝不联网 —— 网上搜不到, 搜了就是脏数据。
     #   问一件答一件: 问小说只答小说+阅读网址, 绝不夹带纪念日/口号/官网等没被问到的信息。
     # ===============================================================
@@ -6655,7 +7472,7 @@ class XiaoFang:
         return "\n".join(out)
 
     # ===============================================================
-    # v1.7 Alpha: 创作类综合任务 —— 现场成篇, 本地直接产出成品
+    # v1.7 Flash: 创作类综合任务 —— 现场成篇, 本地直接产出成品
     #   诗歌 / 小游戏设计 / 小说灵感 都属于「让我给你做一个」的活儿,
     #   必须当场写出来; 绝不丢给联网搜索(搜回来是词典页那种脏结果)。
     # ===============================================================
@@ -6697,6 +7514,74 @@ class XiaoFang:
             return self._novel_idea_answer(text)
         return None
 
+    # ── v1.7 Flash: 「画/写一个<具体事物>」= 文字画面, 绝不是算法 ──────────────
+    #   用户原话:"让他写一个鹈鹕骑自行车, 他给我写算法"。这里把这类请求独立成一条路由。
+    _SCENE_VERBS = ["画一个", "画个", "画一幅", "画一张", "画只", "画条", "画一下",
+                    "给我画", "帮我画", "写一个", "写个", "写一只", "写一张",
+                    "来一个", "来个", "来一只", "生成一个", "生成个", "做个图", "打个图"]
+    #   v1.7 Flash: 动词+量词一律走正则 —— 「画一只/写一条/来一匹/画一下…」全算,
+    #   不再靠枚举(枚举会漏 "画一只小猫" 这种, 用户已指出该类误判)。
+    _SCENE_RE = re.compile(
+        r"(?:画|绘制|画出|绘|写|来|生成)\s*(?:一)?\s*"
+        r"(?:个|只|条|张|幅|匹|头|朵|棵|座|辆|架|艘|片|轮|把|支|杯|盘|颗|粒|枚|面|间|栋|台|部|件|套|株|束|串|群)"
+        r"|(?:画|绘制|画出|绘)\s*一下"
+    )
+    _SCENE_STOP = ["作文", "文章", "论文", "报告", "总结", "文案", "诗", "歌词", "游戏",
+                   "小说", "故事", "剧本", "代码", "程序", "脚本", "函数", "算法", "网页",
+                   "网站", "表格", "方案", "计划", "清单", "邮件", "简历", "攻略", "心得",
+                   "日记", "笑话", "段子", "谜语", "推荐", "答案", "解释", "介绍", "翻译",
+                   "润色", "改写", "为什么", "怎么", "如何", "什么是", "是什么", "题"]
+
+    def _is_scene_request(self, text):
+        """v1.7 Flash: 是不是"给我画/写一个具体东西" —— 是的话走文字画面, 不给代码。"""
+        t = (text or "").strip()
+        if not (2 <= len(t) <= 26):
+            return False
+        if not self._SCENE_RE.search(t):
+            return False
+        if any(s in t for s in self._SCENE_STOP):
+            return False
+        if self._creative_kind(t) is not None:
+            return False
+        # 只要沾了编程域就还它写代码(如"写一个防抖函数"), 绝不抢代码的活
+        try:
+            if self.code._in_prog_domain(t):
+                return False
+        except Exception:
+            pass
+        return True
+
+    def _scene_answer(self, text):
+        """v1.7 Flash: 文字画面 —— 命中画库给 ASCII 画, 否则兜底画框 + 4 格分镜 + 文字描写。"""
+        t = (text or "").strip()
+        subj = self._SCENE_RE.sub("", t, count=1).strip() if self._SCENE_RE.search(t) else t
+        subj = re.sub(r"^(给我|帮我|麻烦|请)", "", subj.strip()).strip()
+        subj = re.sub(r"^(一个|一只|一条|一张|一幅|一份|一匹|一头|个|只|条|张|幅|匹|头)", "", subj).strip()
+        subj = re.sub(r"^[的个只条张幅匹头]", "", subj).strip()
+        subj = re.sub(r"[，。！？、,.!?；;：:\s]+$", "", subj).strip()
+        subj = subj or "一只猫"
+        best, bs = None, 0
+        for a in (getattr(DATA, "ASCII_ART", None) or []):
+            s = sum(1 for kw in a.get("kws", []) if kw and kw in t)
+            if s > bs:
+                best, bs = a, s
+        out = []
+        if best:
+            out += ["🖼 **{}**".format(best.get("name", subj)),
+                    "> 我是用字符一个一个字排出来的（本地跑，不调绘图接口）", "",
+                    best.get("art", "").rstrip("\n"), ""]
+            if best.get("caption"):
+                out += [best["caption"], ""]
+        else:
+            out += ["🖼 **《{}》· 文字画面**".format(subj), "",
+                    _ascii_frame(subj), "",
+                    _scene_written(subj), ""]
+        out += ["## 画面分镜"]
+        for i, ln in enumerate(_scene_storyboard(subj), 1):
+            out.append("- **{}. ** {}".format(i, ln))
+        out += ["", "> 想要别的：换主角、换天气、换画风，或者让我「把这只再细化一层」都行。"]
+        return "\n".join(out)
+
     def _poem_topic(self, text):
         t = (text or "").strip()
         m = re.search(r"关于(.{1,12}?)(?:的诗|的诗歌|一首诗|诗|诗歌)", t)
@@ -6734,14 +7619,29 @@ class XiaoFang:
             out += ["", "—— {}".format(tpl["note"])]
         return "\n".join(out)
 
+    # v1.7 Flash: 只有用户明确"要能跑的代码/原型/源码"时, 游戏设计稿才附代码。
+    #   旧版无条件追加 ```python, 于是"帮我设计一个纯文字 RPG 游戏"也被塞一段算法 —— 用户明确投诉的点。
+    _GAME_ASK_CODE = ["代码", "源码", "原型", "可运行", "能跑", "跑起来", "实现出来",
+                      "写出来跑", "python", "程序", "脚本", "demo", "示例代码"]
+    _GAME_TEXT_ONLY = ["纯文字", "纯文本", "文字版", "文本版", "文字类", "不要图形",
+                       "无图形", "纯console", "控制台", "终端", "命令行"]
+
     def _game_design_answer(self, text):
+        t = text or ""
+        want_code = any(k in t.lower() for k in self._GAME_ASK_CODE)
+        text_only = any(k in t for k in self._GAME_TEXT_ONLY)
         best, bs = None, 0
         for g in DATA.GAME_DESIGNS:
-            s = sum(1 for kw in g.get("kws", []) if kw and kw in text)
+            s = sum(1 for kw in g.get("kws", []) if kw and kw in t)
             if s > bs:
                 best, bs = g, s
         if best is None:
             best = DATA.GAME_DESIGNS[0]
+        # 纯文字/控制台 类请求 → 优先挑"引擎=纯文本"的那份设计稿
+        if text_only and best.get("engine") != "纯文本":
+            cand = [g for g in DATA.GAME_DESIGNS if g.get("engine") == "纯文本"]
+            if cand:
+                best = cand[0]
         out = ["🎮 **{} · 游戏设计稿**".format(best.get("name", "《一分钟方块》")), "",
                "**一句话**：{}".format(best.get("tagline", "")),
                "**人数**：{}　**引擎**：{}".format(best.get("players", "单人"), best.get("engine", "tkinter")),
@@ -6755,9 +7655,18 @@ class XiaoFang:
             out += ["", "## 美术与音效", best["art"]]
         if best.get("tech"):
             out += ["", "## 技术要点", best["tech"]]
-        if best.get("code"):
-            out += ["", "## 可直接运行的 Python 原型（标准库，无需 GPU）",
+        # —— v1.7 Flash: 代码只在"用户真的要"时才给; 纯文字类请求也只给文字版结构 ——
+        if want_code and not text_only and best.get("code"):
+            out += ["", "## 可直接运行的 {} 原型（标准库，无需 GPU）".format(best.get("engine", "Python")),
                     "```python", best["code"].rstrip(), "```"]
+        elif best.get("engine") == "纯文本":
+            out += ["", "## 纯文字本体裁的落地要点",
+                    "- **数据即内容**：剧本写成「场景 dict + 选项 dict」, 加剧情=加一条数据, 不改逻辑。",
+                    "- **文本要有重量**：用换行、缩进、留白和一条分隔线做氛围, 不靠图形也压得住场面。",
+                    "- **存档用 JSON**：随时退出、随时续上, 玩家不会因为被打断而丢进度。",
+                    "- **一次只给一个选择**：纯文字最容易犯的错就是把菜单塞满, 人反而选不出来。"]
+        if not want_code:
+            out += ["", "（这是**设计稿**：想直接拿能跑的完整代码，就跟我说「给我一版可运行的原型代码」。）"]
         out += ["", "## 4 天开发计划"] + ["- {}".format(x) for x in DATA.GAME_PLAN]
         return "\n".join(out)
 
@@ -6835,7 +7744,7 @@ class XiaoFang:
                     DATA.STUDIO_TECH, DATA.STUDIO_SOCIAL)
 
     # ===============================================================
-    # v1.7 Alpha: 其他地区时间 / 当前位置 —— 本机时区表白算, 不惊动联网
+    # v1.7 Flash: 其他地区时间 / 当前位置 —— 本机时区表白算, 不惊动联网
     # ===============================================================
     _CITY_TZ = [
         ("纽约", -5.0, ["纽约", "new york"]), ("洛杉矶", -8.0, ["洛杉矶", "旧金山", "硅谷", "西雅图", "los angeles"]),
@@ -6878,7 +7787,7 @@ class XiaoFang:
             sign, abs(off), ("（{}）".format(tz) if tz else ""))
 
     # ===============================================================
-    # v1.7 Alpha: 实时天气 —— 直连真实气象数据源(wttr.in, 免费无密钥)
+    # v1.7 Flash: 实时天气 —— 直连真实气象数据源(wttr.in, 免费无密钥)
     #   覆盖"当前天气 / 未来 3 天 / 未来 24 小时"三档; 拉不到就如实回落联网检索,
     #   绝不编造温度 —— 天气是最不能瞎猜的一类问题。
     # ===============================================================
@@ -7068,7 +7977,7 @@ class XiaoFang:
         out += ["", "> 数据源：wttr.in 实时气象接口（{}），观测时间 {}。".format(area, obs)]
         return "\n".join(out)
 
-    # v1.7 Alpha: 情感优先通道 —— 先把情绪接住, 再谈别的
+    # v1.7 Flash: 情感优先通道 —— 先把情绪接住, 再谈别的
     #   旧版问题: "我好开心啊今天" 被"今天"的日期分支抢答; "我最近好难过" 掉进知识库倒条目。
     #   现在: 情绪词 + 第一人称 → 直接给共情/共鸣, 不翻库、不报日期、不倒模板。
     _EMO_WORDS = ["开心", "高兴", "快乐", "幸福", "兴奋", "激动", "满足", "感动", "惊喜",
@@ -7101,13 +8010,40 @@ class XiaoFang:
                    "发生什么好事了？说来让我也乐一乐。"
         return None
 
+    # v1.7 Flash: 网络梗理解 —— 用户抛梗就"接得住", 用户问梗就"讲得清"。
+    #   只在"纯聊天"时生效: 带任务词(写代码/算一下/查一下…)时不抢答, 否则又变成"答非所问"。
+    _MEME_TASK = ["写代码", "写程序", "写个", "写一个", "写一篇", "代码", "编程", "实现",
+                  "计算", "算一下", "解方程", "搜索", "查一下", "帮我查", "翻译", "推荐",
+                  "天气", "几点", "几号", "画一", "设计"]
+
+    def _meme_route(self, text, emo):
+        t = text or ""
+        if not t or len(t) > 60 or any(k in t for k in self._MEME_TASK):
+            return None
+        _ask = _meme_mean_ask(t)
+        if _ask:
+            return _ask
+        hits = _meme_scan(t)
+        if not hits:
+            return None
+        say = hits[0].get("say", "")
+        if not say:
+            return None
+        if len(hits) >= 2:
+            return "{} 你这一串梗我还跟得上 👀 想聊什么就直说，我接着陪你。".format(say)
+        return say
+
     def reply(self, user_input, emo, intent, kb_hits):
         text = user_input.strip()
-        # v1.7 Alpha: 创作类综合任务(写诗 / 设计小游戏 / 小说灵感) —— 现场成篇, 先于一切检索
+        # v1.7 Flash: 「画/写一个<具体事物>」= 文字画面 —— 必须先于创作路由与代码路由,
+        #   否则"写一个鹈鹕骑自行车"会被 _GEN_KWS 抢去写算法(用户明确投诉的错)。
+        if self._is_scene_request(text):
+            return self._scene_answer(text)
+        # v1.7 Flash: 创作类综合任务(写诗 / 设计小游戏 / 小说灵感) —— 现场成篇, 先于一切检索
         _cv = self._creative_route(text)
         if _cv:
             return _cv
-        # v1.7 Alpha: 小方工作室精准靶向 —— 先于一切通用逻辑, 问一件只答一件, 全程本地
+        # v1.7 Flash: 小方工作室精准靶向 —— 先于一切通用逻辑, 问一件只答一件, 全程本地
         _studio = self._studio_route(text)
         if _studio:
             return _studio
@@ -7120,26 +8056,30 @@ class XiaoFang:
         # v0.6 Pro: 要网址就只给网址 —— 不顺手介绍自己是啥/工作室是谁 (防止曲解意图)
         if site_ask:
             return "小方工作室官网：{}".format(STUDIO_SITE)
-        # v1.7 Alpha: 其他地区时间 / 当前位置 —— 本地算得出, 直接答, 不必联网
+        # v1.7 Flash: 其他地区时间 / 当前位置 —— 本地算得出, 直接答, 不必联网
         _ct = self._city_time(text)
         if _ct:
             return _ct
         _loc = self._location_answer(text)
         if _loc:
             return _loc
-        # v1.7 Alpha: 实时天气 —— 直连气象数据源, 问一件答一件(当前/3天/24小时), 不编温度
+        # v1.7 Flash: 实时天气 —— 直连气象数据源, 问一件答一件(当前/3天/24小时), 不编温度
         _wx = self._weather_answer(text)
         if _wx:
             return _wx
-        # v1.7 Alpha: 多轮投稿 —— 「再改改 / 换算法 / 加长 / 改结尾」接着上一版继续, 不重出原文
+        # v1.7 Flash: 多轮投稿 —— 「再改改 / 换算法 / 加长 / 改结尾」接着上一版继续, 不重出原文
         if self._is_revise(text) and (self.last_essay or self.last_code):
             _rev = self._revise_last(text, emo, kb_hits)
             if _rev:
                 return _rev
-        # v1.7 Alpha: 情感优先 —— 情绪明显时先接住情绪(共情/共鸣), 不翻库、不倒模板、不报日期
+        # v1.7 Flash: 情感优先 —— 情绪明显时先接住情绪(共情/共鸣), 不翻库、不倒模板、不报日期
         _emo_r = self._emotion_reply(text, emo)
         if _emo_r:
             return _emo_r
+        # v1.7 Flash: 网络梗理解 —— 读懂"绝绝子/破防/栓Q", 先接梗(问梗含义则讲解)
+        _meme_r = self._meme_route(text, emo)
+        if _meme_r:
+            return _meme_r
         # v1.5 正式版: 询问机制 —— 意图不明/缺关键参数(如代码没给语言、作文没给主题)先反问
         #   选项数量与内容由 AI 自定, 末项恒为「其他」, 支持单选/多选; 问完等用户回答。
         _a = self._maybe_ask(text, intent)
@@ -7202,7 +8142,7 @@ class XiaoFang:
             else:
                 tip = "晚上了 🌆"
             return "🕐 现在是 {}，{}，接下来有什么安排吗？".format(now.strftime('%H:%M:%S'), tip)
-        # v1.7 Alpha: 情绪明显时不能被"今天"的日期分支抢答 ——
+        # v1.7 Flash: 情绪明显时不能被"今天"的日期分支抢答 ——
         #   "我好开心啊今天" 里的"今天"只是语气词, 用户要的是共情而不是报日期。
         #   只有当用户真的在问日期(几号/星期几/日期/什么日子)时才走日期分支。
         _emo_strong = abs(emo.get("score", 0)) >= 2 and not any(
@@ -7310,7 +8250,7 @@ class XiaoFang:
 
     def _multi_deliver(self, answer, emo, intent, kb_hits):
         """v0.6 多轮思考: 小方边答边想/边想边答 (类 DeepSeek V4 Pro)。
-        v1.7 Alpha 重写: 不再把句子按 i%N 交错重排(那会把长文彻底打乱、Markdown 全废),
+        v1.7 Flash 重写: 不再把句子按 i%N 交错重排(那会把长文彻底打乱、Markdown 全废),
         改为【顺序切段】; 含 Markdown 结构(标题/列表/表格/代码块)时整篇按原样顺序输出,
         绝不重排、绝不截断。"""
         # 含 Markdown 结构 → 顺序完整输出, 不做任何重排
@@ -7380,7 +8320,7 @@ class XiaoFang:
             print(C_REPLY + "  F4  开启新对话[需确认] · F5  强制掐断思考(防卡死) · F6  退出" + C_RESET)
             print(C_REPLY + "  F7  展开/折叠思考分布面板 · 点击面板也可 展开/折叠 · 盲文点=实时加载" + C_RESET)
             print(C_REPLY + "  ↑/↓ 选命令 · Tab 填入 · 回车 选中 · 继续输入=实时过滤 · Esc 取消联想" + C_RESET)
-            print(C_REPLY + "🧠 v1.7 Alpha 超大型更新: 2B+ 大模型(≈{:.1f}亿参数·{}层纵深·int8量化常驻≈{:.2f}GB·自动降级算力不减)".format(
+            print(C_REPLY + "🧠 v1.7 Flash 超大型更新: 2B+ 大模型(≈{:.1f}亿参数·{}层纵深·int8量化常驻≈{:.2f}GB·自动降级算力不减)".format(
                 MODEL_PARAMS / 1e8, MODEL_LAYERS, _TIER_GB) + C_RESET)
             print(C_REPLY + "🎓 学习: 初始权重不再固定 —— fp32 主权重 + AdamW 优化器 + 反向传播, 每轮对话真在做梯度更新" + C_RESET)
             print(C_REPLY + "🧩 深度思考: 两层嵌套(思考→验算→再思考→再验算) 由 Transformer 自己生成, 收在终止符 {} 才落笔".format(TERMINATOR) + C_RESET)
@@ -7439,6 +8379,10 @@ class XiaoFang:
                 print(C_HINT + "  最近生词: " + "、".join(sorted(self.selfmem.words)[-10:]) + C_RESET)
             if self.selfmem.know:
                 print(C_HINT + "  最近知识: " + "、".join(list(self.selfmem.know)[-8:]) + C_RESET)
+            # v1.7 Flash: 长期事实(你是谁 / 在意什么)也一并展示, 记得什么一目了然
+            _fb = self.selfmem.facts_brief()
+            if _fb:
+                print(C_HINT + "  记得的你: " + _fb + C_RESET)
             print(C_HINT + "  提示: 记忆有上限, 学到新词会按使用频率淘汰久不用的旧词(LRU); /forget 可整库清空。" + C_RESET)
             return "ok"
         elif c == "/forget":
@@ -7458,15 +8402,34 @@ class XiaoFang:
 
     def process_chat(self, user_input):
         text = (user_input or "").strip()
+        # v1.7 Flash: 本轮序号 —— chips 归属标记用它, 保证"这一轮的建议"只跟这一轮绑定
+        UI_ST["turn"] = UI_ST.get("turn", 0) + 1
         # v1.0 修复: 一旦进入这句的处理并开始输出(灰思考/蓝回答都是流式), 立即标记 streaming,
         # 主线程看门狗据此【停止再刷"仍在思考"】——因为它本就会一路打出来, 不需要(且也会挤断颜色)。
         self._streaming = True
+        # ── v1.7 Flash: 第一步 · 输入侧违禁词检测 ──────────────────────────
+        #   医学/生理语境(如"我这个部位发炎了怎么治")由 _ban_scan 自动豁免, 给合理回答;
+        #   炸弹/色情获取/恐怖/反政/违法 一律直接拒绝, 且不进检索(省算力也更安全)。
+        _bk, _bn, _br = _ban_scan(text, output=False)
+        if _bk:
+            if self._skip_deliver:
+                return
+            self._note_stage("安全合规检查")
+            _typewrite("小方: " + _br)
+            print(C_HINT + "  [合规拦截 · {}]".format(_bn) + C_RESET)
+            self.history.append(text)
+            self.history.append(_br)
+            return
         # v0.5 正式版: 自升级大脑——从用户这句里学生词/学的解释
         learn_note = ""
         if text:
             lw, ld = self.learner.learn(text)
             if lw or ld:
                 learn_note = "🧠 我记了 {} 个生词、{} 条知识。".format(lw, ld)
+            # v1.7 Flash: 新记住的"关于你的长期事实"当场回执 —— 让用户知道小方真的记住了
+            if getattr(self.learner, "last_fact", None):
+                _fk, _fv = self.learner.last_fact
+                learn_note = (learn_note + " ").lstrip() + "📌 记住了你的{}：{}。".format(_fk, _fv)
         # v0.6 正式版: 先进深度思考, 再做关键词检测 (修复"先关键词截胡 → 答非所问")
         #   预设(关键词)只在"短句/闲聊型"意图下启用; 知识/官网/身份/数学等问题一律走 reply() 的精准分支。
         self._note_stage("解析你的意思")
@@ -7485,7 +8448,7 @@ class XiaoFang:
         light_chat = intent["top"] in ("greet", "bye", "thanks", "joke", "help",
                                        "time", "date", "smalltalk") or len(text) <= 6
         preset_answer = None
-        # v1.7 Alpha: 小方工作室精准靶向 —— 命中就绕过预设关键词, 保证"问一件只答一件"
+        # v1.7 Flash: 小方工作室精准靶向 —— 命中就绕过预设关键词, 保证"问一件只答一件"
         _studio_pre = self._studio_route(text)
         if light_chat and not _studio_pre:
             for p in self.presets:
@@ -7498,18 +8461,25 @@ class XiaoFang:
             self.meter.count_output(out_tokens)
             if self._skip_deliver:
                 return
+            # v1.7 Flash: 预设话术也要过输出三道闸(双重自我确认 / 违禁 / 医疗免责)
+            answer, _blk = self._finalize_answer(text, answer, emo, intent)
             _typewrite("小方: " + answer)
-            if learn_note:
+            if learn_note and not _blk:
                 _typewrite(C_HINT + learn_note + C_RESET)
             print(C_HINT + "  [{}]".format(self.meter.format()) + C_RESET)
             self.history.append(text)
             self.history.append(answer)
+            self._after_deliver(text, answer, emo, intent)   # v1.7: 弹建议询问
             self._train_turn(text, answer)   # v1.7: 闲聊也做一步反向传播
             return
         answer = self.reply(text, emo, intent, kb_hits)
+        # ── v1.7 Flash · 第二步: 输出侧三道闸 ──────────────────────────────
+        #   ① 双重自我确认(真是用户要的吗 / 全都是用户要的吗)
+        #   ② 输出违禁词检测   ③ 医疗诉求 → 补"AI 不是医生、及时就医"免责
+        answer, _blk = self._finalize_answer(text, answer, emo, intent)
         out_tokens = self.tokenizer.tokenize(answer)
         self.meter.count_output(out_tokens)
-        if learn_note:
+        if learn_note and not _blk:
             answer = answer + " " + learn_note
         self._note_stage("正在组织回答")
         if self._skip_deliver:
@@ -7520,6 +8490,8 @@ class XiaoFang:
         else:
             _typewrite("小方: " + answer)
         print(C_HINT + "  [{}]".format(self.meter.format()) + C_RESET)
+        # ── v1.7 Flash · 第三步: 交付完成 → 弹 0~3 条黄色建议询问 ──────────
+        self._after_deliver(text, answer, emo, intent)
         self.history.append(text)
         self.history.append(answer)
         self.lm.add_text(text)
@@ -7527,6 +8499,49 @@ class XiaoFang:
         self._train_turn(text, answer)   # v1.7: 每轮真实反向传播 + AdamW 更新权重
         if len(self.history) > self.max_history:
             self.history = self.history[-(self.max_history):]
+
+    def _finalize_answer(self, text, answer, emo, intent):
+        """v1.7 Flash: 输出前的三道闸 —— 双重自我确认 / 输出违禁检测 / 医疗免责。
+        返回 (最终答案, 是否被合规拦截)。医疗诉求不拦截, 只在结尾补就医免责。
+
+        v1.7 Flash · 放宽: 字面规则只留"明确违禁意图"硬拦; 只命中"疑似敏感"观察词时,
+        把「用户问题 + 小方要说的话」再送 Transformer 读一遍(自回归合理性复核),
+        读得顺就放行 —— 用户反馈"提示消息可能包含敏感词"的误伤由此消掉。"""
+        a = _self_confirm(text, answer)
+        _k, _n, _r = _ban_scan(a, output=True)
+        if _k:
+            return (_r, True)
+        if not self._out_review_ok(text, a):     # ②' 疑似敏感 → Transformer 复核是否合理
+            return (_TF_REVIEW_REPLY, True)
+        if _needs_med_disclaimer(text, a):
+            a = a.rstrip() + "\n\n" + MED_DISCLAIMER
+        return (a, False)
+
+    def _out_review_ok(self, text, answer, reviewer=None):
+        """v1.7 Flash: 输出只命中"疑似敏感"观察词时, 再送 Transformer 复核它是否合理。
+        返回 True = 放行(合理 / 判不出来 / 不值得复核), False = 拦下。
+        reviewer 可注入(测试用), 默认走 _tf_review(真 Transformer 前向)。"""
+        if not _watch_hits(answer):
+            return True                              # 没碰到疑似敏感词 → 直接放行
+        if not any(w in answer for w in _TF_RISK_WORDS):
+            return True                              # 只是提到敏感词、并非在给做法 → 放行(放宽)
+        if reviewer is None:
+            reviewer = lambda t, a: _tf_review(getattr(self, "transformer", None),
+                                               getattr(self, "tokenizer", None), t, a)
+        try:
+            ok, _sc = reviewer(text, answer)
+            return bool(ok)
+        except Exception:
+            return True
+
+    def _after_deliver(self, text, answer, emo, intent, extra=None):
+        """v1.7 Flash: 交付完成后弹 0~3 条黄色建议询问。
+        数量与内容由本轮话题 + 回答形态 + 情绪确定性推导(不是随机), 推不出就不给。"""
+        try:
+            chips = build_suggestions(text, answer, (intent or {}).get("top"), emo, extra=extra)
+            _render_chips(chips)
+        except Exception:
+            pass
 
     def _print_note(self, msg, color=C_DEEP):
         """v1.0: 用全局打印锁写一行带颜色的提示, 避免与打字机输出的颜色交错."""
@@ -7540,12 +8555,12 @@ class XiaoFang:
         UI_ST["stage"] = s       # v1.4: 状态面板实时阶段
 
     # ══════════════════════════════════════════════════════════════════════
-    # v1.7 Alpha · 在线学习: 每轮对话都做一次真正的反向传播 + AdamW 更新
+    # v1.7 Flash · 在线学习: 每轮对话都做一次真正的反向传播 + AdamW 更新
     #   → Transformer 的初始权重不再是"一次性固定"的, 而是随对话持续被优化器改写。
     #   监督目标是 next-token: 让模型学着"给定用户这句, 该接出怎样的回答"。
     # ══════════════════════════════════════════════════════════════════════
     def _train_turn(self, text, answer=None):
-        """v1.7 Alpha: 一轮在线反向传播。返回 {"loss","gnorm","steps"} 或 None。"""
+        """v1.7 Flash: 一轮在线反向传播。返回 {"loss","gnorm","steps"} 或 None。"""
         if not TRAIN_ENABLED:
             return None
         tr = getattr(self, "transformer", None)
@@ -7574,7 +8589,7 @@ class XiaoFang:
             return None
 
     def _train_brief(self):
-        """v1.7 Alpha: 给深度思考面板用的一行训练/优化器摘要。"""
+        """v1.7 Flash: 给深度思考面板用的一行训练/优化器摘要。"""
         tr = getattr(self, "transformer", None)
         if tr is None or not getattr(tr, "bank", None):
             return None
@@ -7591,7 +8606,7 @@ class XiaoFang:
             return None
 
     def _train_hist_line(self):
-        """v1.7 Alpha: 近若干步 loss 曲线(供冒烟测试/思考面板打印)。"""
+        """v1.7 Flash: 近若干步 loss 曲线(供冒烟测试/思考面板打印)。"""
         tr = getattr(self, "transformer", None)
         if tr is None or not getattr(tr, "bank", None):
             return "—"
@@ -7664,7 +8679,7 @@ class XiaoFang:
                                          .format(str(nxt)[:14]), C_HINT)
             if self._cancel_seen and not got.get("done"):
                 got["cancel"] = True
-            # v1.7 Alpha: 改成"无输出静默"判卡 —— 只要还有任何新输出(打字机/面板/阶段),
+            # v1.7 Flash: 改成"无输出静默"判卡 —— 只要还有任何新输出(打字机/面板/阶段),
             #   就说明它活着, 长篇回答不会在打到一半被砍断。
             _last_out = max(t0, float(_OUT_TICK.get("t") or 0.0), float(UI_ST.get("last_tick") or 0.0))
             if (now - _last_out > RESPONSE_TIMEOUT) or (now - t0 > ABSOLUTE_TURN_CAP):
@@ -7681,10 +8696,11 @@ class XiaoFang:
         if not got.get("cancel") and not got.get("err"):
             try:
                 st = self.selfmem.stats() if hasattr(self, "selfmem") else {}
-                print(C_HINT + "  🧠 学习因子 · {} · 知识库 生词 {w}/{mw} · 摘要 {k}/{mk} 条".format(
+                print(C_HINT + "  🧠 学习因子 · {} · 知识库 生词 {w}/{mw} · 摘要 {k}/{mk} 条 · 记得的你 {fa} 条".format(
                     self.meter.format(),
                     w=st.get("words", 0), mw=st.get("max_words", 0),
-                    k=st.get("know", 0), mk=st.get("max_know", 0)) + C_RESET)
+                    k=st.get("know", 0), mk=st.get("max_know", 0),
+                    fa=st.get("facts", 0)) + C_RESET)
             except Exception:
                 pass
         if got.get("cancel"):
