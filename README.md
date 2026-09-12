@@ -2,6 +2,9 @@
 
 一个完全**本地运行、纯自研**的中文 AI 聊天助手，由「小方工作室」开发。小方不调用任何第三方大模型 API，对话、思考、情绪识别全在你自己的电脑上完成。
 
+> 🎮 小方工作室 · 用心做好游戏 · [fanggame.company](https://fanggame.company)
+> 📧 联系：xiaofangstudio@outlook.com
+
 > 当前最新版本：**v1.5 正式版 · FlphaLit 引擎**（FlphaLit = 自研的轻量本地语言模型，算力约 **1.68B 参数**）
 
 ---
@@ -121,7 +124,7 @@ python xiaofang_v15.py
 - 迭代中派生了不少**实验性变体**：`alpha`（先行）、`beta`（测试）、`pro`（增强）、`search`（检索）、`flash`（快速版）等
 - 每一版都保留了独立源码，归档在 `历史版本/` 目录，方便随时回溯
 
-所以小方既是你的聊天伙伴，也是一个「前期手工打磨、后期用 AI 养成 AI」的完整工程样本——**Vibe Coding 是它中后期提速的手段，而不是它的起点**。
+所以小方既是你的聊天伙伴，也是「前期手工打磨、后期加速迭代」的真实开发样本——**Vibe Coding 是它中后期提速的手段，而不是它的起点**。
 
 ---
 
@@ -201,6 +204,8 @@ AI 小方/
 
 <div align="center">
 
-**小方工作室 · [fanggame.company](https://fanggame.company) · 用 AI 养成 AI**
+**小方工作室 · 用心做好游戏 🎮 · [fanggame.company](https://fanggame.company)**
+
+📧 联系：xiaofangstudio@outlook.com
 
 </div>
