@@ -1021,6 +1021,80 @@ _ok(all(isinstance(x, str) and len(x) >= 1 for x in _tfs),
 
 
 # ==================================================================
+# ㉗ 情绪 emoji 落位 (用户定死: 只准落在 逗号/句号/换行符/终止符 的前面)
+#   这一条是补防线 —— v1.8 Alpha 的十余条精准路由全是"命中直接 return",
+#   曾经把唯一插 emoji 的那一步整块绕过去, 于是"18 Alpha 不输出 emoji"。
+#   只测函数级是不够的, 这里从 reply() 出发, 过 _finalize_answer 真出口,
+#   逐条检查: ① 回答里到底有没有 emoji ② 每个 emoji 是否都摆在合法位。
+# ==================================================================
+_sec("㉗ 情绪 emoji 落位 (只准落在逗号/句号/换行符/终止符之前)")
+_EMOJI_CASES = [
+    "你好呀",
+    "小方你自己的架构是什么样的",
+    "小方工作室有哪些小说",
+    "有什么好玩的游戏",
+    "给我写一首关于秋天的短诗",
+    "现在几点了",
+    "今天天气怎么样",
+    "帮我写个快速排序",
+    "我最近压力好大",
+    "我破防了",
+    "介绍一下量子计算",
+    "帮我把这几款显卡对比一下",
+    "谢谢你",
+    "推荐几个效率工具",
+    "讲个笑话",
+    "我是不是很没用",
+]
+
+
+def _emoji_ok(txt):
+    """返回 (emoji 个数, 落位不合法的个数)。合法位 = 紧挨着 逗号/句号/换行/终止符 之前。"""
+    _n, _bad, _i = 0, 0, 0
+    _ch = list(txt)
+    _L = len(_ch)
+    while _i < _L:
+        if M._is_emoji_char(_ch[_i]):
+            _n += 1
+            _j = M._emoji_span(_ch, _i)
+            _nxt = _ch[_j] if _j < _L else ""
+            if not (_j >= _L or _nxt in M._EMOJI_BEFORE):
+                _bad += 1
+            _i = _j
+            continue
+        _i += 1
+    return _n, _bad
+
+
+_e_with, _e_bad, _e_rows = 0, [], []
+for _c in _EMOJI_CASES:
+    _o = ask(_c, "㉗ emoji " + _c)
+    _fc = xf._finalize_answer(_c, _o, xf.emotion.analyze(_c), xf.intent.detect(_c, xf.emotion.analyze(_c)))[0]
+    _ne, _nb = _emoji_ok(_fc)
+    if _ne:
+        _e_with += 1
+    if _nb:
+        _e_bad.append((_c, _fc[:36]))
+    _e_rows.append((_c, _ne))
+_ok(_e_with >= len(_EMOJI_CASES) - 1,
+   "各类路由的回答都带上了情绪 emoji (%d/%d 条) %s" % (_e_with, len(_EMOJI_CASES), _e_rows))
+_ok(not _e_bad, "所有 emoji 都落在合法位(逗号/句号/换行/终止符之前) 越界 %d 条" % len(_e_bad))
+if _e_bad:
+    for _c, _s in _e_bad[:5]:
+        _w("        ✗ %s → %r" % (_c, _s))
+_s1 = M._seat_emoji("你好，今天不错。", {"score": 3})
+_ok(_emoji_ok(_s1)[0] == 1 and _emoji_ok(_s1)[1] == 0,
+   "裸答案会补上且只补 1 个情绪 emoji 并摆正 %r" % (_s1,))
+_s2 = M._seat_emoji("你好😀，今天不错。", {"score": 3})
+_ok(_emoji_ok(_s2)[0] == 1, "已经有 emoji 的答案只摆正位置, 不会重复再加一个 %r" % (_s2,))
+_r3 = M._normalize_emoji("😀你好，今天不错。")
+_ok(_emoji_ok(_r3)[0] == 1 and _emoji_ok(_r3)[1] == 0 and not _r3.startswith("😀"),
+   "句首乱插的 emoji 会被搬到合法位之前(不再占话头) %r" % (_r3,))
+_ok("360°" in M._normalize_emoji("360° 这个角度很标准。"),
+   "度数符 ° 不会被误当 emoji 搬走 (360° 完整保留) %r" % (M._normalize_emoji("360° 这个角度很标准。"),))
+
+
+# ==================================================================
 # 收尾
 # ==================================================================
 _sec("收尾")

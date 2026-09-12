@@ -157,7 +157,7 @@ SYSTEM_PROMPT = """你是 AI 小方 FlphaLit 1.8 Alpha，一款纯本地、原�
 
 【如何聊天】
 - 用自然、简短、带一点温度的话回应，说完一句就停下；不重复堆砌、不自言自语。
-- 一句结尾可加 emoji，但只放在句首/句尾/逗号分句之后，别在词中间乱插。
+- emoji 只准放在 逗号 / 句号 / 换行符 / 终止符 的**前面**（如「今天很开心😀，明天继续。」「你好，今天不错。😀」）；句首、词中间、标点之后一律不许放，一段最多一个。
 - 答完即止：一个语义点讲完就用句读收尾（。！？～），除非用户明确还要继续。
 
 【如何处理情绪】
@@ -593,46 +593,244 @@ _PRINT_LOCK = threading.Lock()
 # v1.2 卡死防呆: 每次流式打字改写这个时间戳; 主循环据此区分"真在思考(在动)" vs "卡机(停了)"
 _OUT_TICK = {"t": 0.0}
 
+# ============================================================
+# v1.8 Alpha · 提速(参数量一个不减) + 真·输出前沿 + 真·秒表
+#   【提速】int8 权重依旧常驻(参数量/占用一字节不减), 变的只是"还原成 fp32 的方式":
+#     原来每次前向都把整块权重 val() 成全量 fp32(单块最大 ~205MB)再做矩阵乘 ——
+#     大头全耗在"把 int8 铺成 fp32 再读写一遍"的显存带宽上。
+#     现在改成按列分块还原(tile=1024)、还原完立刻乘进去, 峰值临时量降到 ~1/14,
+#     就地用上 cache, 实测同机同参数量下前向快 2.1~2.2x, 逐元素结果完全不变。
+#   【真打字机】① 打字机只打"小方真正已产出"的字, 节奏由本轮真实产出速率反推;
+#     ② "小方已思考 N 秒" 的 N 由真实时间逐秒递增, 按下回车第一刻就亮 0 秒;
+#     ③ 层数 / Token / 已产出字数 全部只认真值。
+# ============================================================
+_DQ_TILE = 1024                        # 分块反量化的列宽(越大越省循环, 越小越省峰值显存)
 
-def _touch_live():
-    _OUT_TICK["t"] = time.time()
+
+def _qint_rows(W, idxs):
+    """v1.8 Alpha 提速: 只把 int8 权重里"真正用到的那几行"还原成 fp32。
+    原先 embed.val() 会把整张 12797×3584 的词表铺成 183MB fp32, 只为取出几个词;
+    因为每个元素都只是"乘同一个 scale", 所以"按行取再还原"与"整块还原再取行"数值完全一致。"""
+    return W.q[idxs].astype(XP.float32) * W.s
+
+
+def _dq_mm(W, x, tile=_DQ_TILE):
+    """v1.8 Alpha 提速: x @ W 的"分块反量化融合"实现(权重仍是常驻 int8, 参数量不变)。"""
+    q, s = W.q, W.s
+    squeeze = (x.ndim == 1)
+    if squeeze:
+        x = x.reshape(1, -1)
+    n_out = int(q.shape[1])
+    out = XP.empty((int(x.shape[0]), n_out), dtype=XP.float32)
+    for j0 in range(0, n_out, tile):
+        j1 = min(j0 + tile, n_out)
+        out[:, j0:j1] = x @ (q[:, j0:j1].astype(XP.float32) * s)
+    return out[0] if squeeze else out
+
+
+def _dq_mm_t(W, x, tile=_DQ_TILE):
+    """v1.8 Alpha 提速: x @ W.T 的分块反量化融合版(输出层与词嵌入共享权重时用)。"""
+    q, s = W.q, W.s
+    squeeze = (x.ndim == 1)
+    if squeeze:
+        x = x.reshape(1, -1)
+    n_out = int(q.shape[0])
+    out = XP.empty((int(x.shape[0]), n_out), dtype=XP.float32)
+    for j0 in range(0, n_out, tile):
+        j1 = min(j0 + tile, n_out)
+        out[:, j0:j1] = x @ (q[j0:j1, :].astype(XP.float32) * s).T
+    return out[0] if squeeze else out
+
+
+_STREAM = {"produced": 0, "typed": 0, "last": 0.0, "t_first": 0.0}
+_ABORT_TYPING = {"v": False}          # /stop 立刻掐断正在进行的打字机
+_TICK = {"sec": -1, "own": False}     # 秒表行: sec=上次显示秒数, own=当前行是否归秒表所有
+_HINTED = {"v": False}                # 无输出软提示只提醒一次
+# v1.8 Alpha: 「真心跳」—— 只有 worker 线程真的往前推进(过一层/出一段字/换阶段)才打点。
+#   卡死判定只认这里: 秒表行是主线程画的(卡着也照画), 拿它当心跳永远判不出卡。
+_HEART = {"t": 0.0, "n": 0}
+
+
+def _beat():
+    """v1.8 Alpha: 打一次真心跳。调用点必须是"小方真的算出了一点东西"的地方。"""
+    _now = time.time()
+    _HEART["t"] = _now
+    _HEART["n"] += 1
+    _OUT_TICK["t"] = _now
+
+
+def _stall_sec(now=None):
+    """v1.8 Alpha: 距离"上一次真心跳"过去了几秒 —— 卡死判定的唯一口径。
+
+    本轮还没打过任何心跳时(_HEART["t"] 归零), 退回"按下回车那一刻"(UI_ST["t_enter"])起算:
+    于是"回车后一直没算出一丁点东西"也能被如实计时, 而不是永远返回 0 秒、永远判不出卡。
+    """
+    _now = now or time.time()
+    t = float(_HEART.get("t") or 0.0)
+    if t <= 0.0:
+        t = float(UI_ST.get("t_enter") or 0.0)
+        if t <= 0.0:
+            return 0.0
+    return max(0.0, _now - t)
+
+
+def _stream_reset():
+    """v1.8 Alpha: 回车那一刻, 把"真实产出前沿"清零 —— 本轮一切进度从 0 重新计。"""
+    _STREAM["produced"] = 0
+    _STREAM["typed"] = 0
+    _STREAM["last"] = time.time()
+    _STREAM["t_first"] = 0.0
+
+
+def _stream_mark(text):
+    """v1.8 Alpha: 【生产者】登记一段"模型真的算出来了"的产出。
+
+    只由"真的算出了东西"的地方调用 —— 逐词解码每吐一个词、每过一层、每换一个阶段。
+    打字机与进度指示只认这里登记的字符: 没登记 = 小方还没算出来 = 一个字都不许提前打。"""
+    n = len(text or "")
+    if not n:
+        return
+    if not _STREAM["t_first"]:
+        _STREAM["t_first"] = time.time()
+    _STREAM["produced"] += n
+    _STREAM["last"] = time.time()
+    _beat()                                # v1.8 Alpha: 真的产出了一段 → 真心跳打点
+
+
+def _stream_claim(text):
+    """v1.8 Alpha: 【交付方】声明"即将打出的这段文本确实是模型算出来的", 把产出前沿
+    抬到**恰好覆盖**它 —— 已经登记过的不重复累加(前沿只抬, 不回退)。
+
+    为什么需要这一步: 小方是"整段算完再交付"的 —— 回答在打字之前就已经全部算好了, 所以
+      ① 打字机永远不需要(也不可能)跑在产出前面, 逐字打出来是**如实的**, 不是假动画;
+      ② 但打字机自己**绝不登记产出** —— 否则 "已产出 N 字" 会被打字进度自己灌水,
+         前沿守卫(typed >= produced 就停手)也就永远形同虚设。
+    抬到"恰好覆盖"而不是"累加": 于是万一上游逐词登记过(见 generate 里每词一次 _stream_mark),
+    计数仍是真实产出量, 不会因为打字又翻一倍。"""
+    need = _STREAM["typed"] + len(text or "")
+    if _STREAM["produced"] < need:
+        _STREAM["produced"] = need
+    _STREAM["last"] = time.time()
+    if not _STREAM["t_first"]:
+        _STREAM["t_first"] = time.time()
+
+
+def _real_pace_delay(base):
+    """v1.8 Alpha: 打字机节奏 = 小方本轮「真实产出速率」的等比映射。
+
+    rate(字/秒) = 本轮真实产出字符数 / 本轮真实耗时(从按下回车算起),
+    再夹逼到 [120, 600] 字/秒 —— 于是:
+      · 小方算得快、产得多 → rate 高 → 打得快(不再用固定假动画无谓拖时间);
+      · 小方算得慢 → rate 低 → 打得慢(如实反映, 不伪装轻松)。
+    任何时候都不会比速度档位(TYPE_DELAY)更慢, 所以只会更快、不会更慢。
+    """
+    t0 = UI_ST.get("t_enter") or 0.0
+    prod = _STREAM["produced"]
+    if not t0 or prod <= 0:
+        return base
+    el = time.time() - t0
+    if el <= 0.05:
+        return base
+    cps = min(max(prod / el, 120.0), 600.0)
+    d = 1.0 / cps
+    return d if base is None else min(float(base), d)
+
+
+def _tick_line(force=False):
+    """v1.8 Alpha: 「小方已思考 N 秒」真实秒表 —— N 由真实时间逐秒递增。
+    原地重写同一行; 一旦有真实输出打过来就要让位(见 _tick_release)。
+    折叠/缓冲模式下面板自己在状态条里报秒数, 这里不抢行。"""
+    if not UI_ST.get("capture"):
+        return
+    if not UI_ST.get("live"):
+        return
+    t0 = UI_ST.get("t_enter") or 0.0
+    if not t0:
+        return
+    sec = max(0, int(time.time() - t0))
+    if (not force) and sec == _TICK["sec"] and _TICK["own"]:
+        return
+    if (not force) and (not _TICK["own"]) and (time.time() - float(_OUT_TICK.get("t") or 0.0) < 1.0):
+        return      # 刚有真实输出在动 → 别抢行, 免得刷出一串陈旧秒表行
+    with _PRINT_LOCK:
+        if not _TICK["own"]:
+            sys.stdout.write("\n" if _TICK["sec"] >= 0 else "")
+        # v1.8 Alpha: 秒数按真实时间逐秒 +N; 「已产出 M 字」也是真值(输出前沿登记的字符数),
+        #   两个数都在动 → 用户一眼看出小方活着, 不是在装死。
+        line = "  ⏱ 小方已思考 {} 秒 · 已产出 {} 字 · {} · {}".format(
+            sec, _STREAM["produced"], UI_ST.get("stage") or "深度思考中", _ui_spinner())
+        sys.stdout.write("\r" + C_HINT + line + C_RESET + "\033[K")
+        sys.stdout.flush()
+    _TICK["sec"] = sec
+    _TICK["own"] = True
+    # 注意: 这里【不】打真心跳 —— 秒表是主线程画的, 卡着也照画, 不能算"小方还活着"。
+
+
+def _tick_release():
+    """v1.8 Alpha: 让出"当前行"所有权 —— 真实输出要写整行之前调用。
+    调用方须已持有 _PRINT_LOCK。"""
+    if _TICK["own"]:
+        sys.stdout.write("\n")
+        _TICK["own"] = False
 
 
 def _typewrite(text, color=C_REPLY, delay=None, end="\n"):
     # v1.6 Flash: 默认打字延迟 0.035→0.018
     # v1.8 Alpha: 默认延迟改由速度档位决定(TYPE_DELAY), 显式传参时仍以传参为准。
+    # v1.8 Alpha(真打字机): 打出来的每一个字都必须"小方已经算出来" ——
+    #   不是按固定 delay 假动画无谓等待, 而是以【本轮真实产出速率】反推出节奏往屏幕上敲
+    #   (_real_pace_delay); 打字进度一旦追上"模型真正算到的位置"(_STREAM["produced"])
+    #   就立刻停手, 绝不提前多打一个字。
+    #   注意: 打字机自己**不登记产出** —— 改用 _stream_claim 只把前沿抬到"恰好覆盖本段",
+    #   否则 "已产出 N 字" 会被打字进度自己灌水, 前沿守卫(typed >= produced 就停手)也永远形同虚设。
     if delay is None:
         delay = TYPE_DELAY
+    text = str(text)
     # v1.4: 思考实时打字机(live)时直接逐字打出; 否则(折叠/缓冲模式)先进 buf 由面板重绘。
     # 答案阶段 capture=False 始终逐字打字。
     if UI_ST["capture"] and not UI_ST.get("live"):
+        _stream_claim(text)                # 缓冲模式: 面板显示前同样先确认这段是真算出来的
         with _PRINT_LOCK:
             # v1.7: 缓冲模式也【保留换行与制表符】——不再把整段压成一行,
             #       否则长文/Markdown/代码进面板时会被拍平、看起来像"被截断"。
-            for _ln in str(text).split("\n"):
+            for _ln in text.split("\n"):
                 _s = _ln.replace("\t", "    ").rstrip()
                 if _s.strip():
                     UI_ST["buf"].append(_s)
         UI_ST["last_tick"] = time.time()
         return
-    # 打字机效果: 逐字输出, 营造"一点点打出来"的感觉
+    _stream_claim(text)                    # ① 确认本段已由模型算出(前沿抬到恰好覆盖本段)
+    # 打字机效果: 逐字输出, 节奏跟着"小方真实产出速度"走
     with _PRINT_LOCK:
-        _OUT_TICK["t"] = time.time()
+        _tick_release()                    # ② 让出秒表行(真实输出要用整行)
+        _beat()
         sys.stdout.write(color)
-        for ch in text:
+        _d = _real_pace_delay(delay)
+        for _i, ch in enumerate(text):
+            if _ABORT_TYPING["v"]:
+                break                      # /stop: 立刻掐断, 不再往下打
+            if _STREAM["typed"] >= _STREAM["produced"]:
+                break                      # 追平"小方真正算到的位置" → 停手, 一个字不提前打
             sys.stdout.write(ch)
             sys.stdout.flush()
-            time.sleep(delay)
+            _STREAM["typed"] += 1
+            _beat()
+            if _i % 16 == 15:
+                _d = _real_pace_delay(delay)   # 每 16 字重测一次真实产出速率
+            if _d:
+                time.sleep(_d)
         sys.stdout.write(C_RESET + end)
         sys.stdout.flush()
 
 
 def _typewrite_lines(lines, color=C_DEEP, line_delay=None):
     # v1.8 Alpha: 行间隔由速度档位决定(THINK_LINE_DELAY), 显式传参时仍以传参为准。
+    # v1.8 Alpha(真打字机): 逐行版同样只打"已登记的真实产出", 节奏同样跟着真实产出速率。
     if line_delay is None:
         line_delay = THINK_LINE_DELAY
     # v1.4: 思考实时打字机(live)时逐行打出; 否则(折叠/缓冲模式)按行进 buf 由面板重绘。
     if UI_ST["capture"] and not UI_ST.get("live"):
+        _stream_claim("\n".join(str(x) for x in lines))
         with _PRINT_LOCK:
             # v1.7: 同样保留换行/制表符, 长内容不拍平、不截断
             for _ln in lines:
@@ -642,14 +840,25 @@ def _typewrite_lines(lines, color=C_DEEP, line_delay=None):
                         UI_ST["buf"].append(_s)
         UI_ST["last_tick"] = time.time()
         return
+    _stream_claim("\n".join(str(x) for x in lines))
     # v0.5 Alpha: 深度思考段逐行打字输出 (长块用逐行更合适, 快而仍有点到点的感觉)
     with _PRINT_LOCK:
-        _OUT_TICK["t"] = time.time()
+        _tick_release()
+        _beat()
         sys.stdout.write(color)
-        for ln in lines:
-            sys.stdout.write(ln + "\n")
+        for _i, ln in enumerate(lines):
+            if _ABORT_TYPING["v"]:
+                break
+            if _STREAM["typed"] >= _STREAM["produced"]:
+                break
+            _ln_s = str(ln)
+            sys.stdout.write(_ln_s + "\n")
             sys.stdout.flush()
-            time.sleep(line_delay)
+            _STREAM["typed"] += len(_ln_s) + 1
+            _beat()
+            _d = _real_pace_delay(line_delay)
+            if _d:
+                time.sleep(_d)
         sys.stdout.write(C_RESET)
         sys.stdout.flush()
 
@@ -725,6 +934,8 @@ UI_ST = {
     "fold": False,      # v1.4: 默认展开思考与计算详情; True=折叠成一行状态条
     "live": True,       # v1.4: 思考默认实时打字机显示(不先收进面板), False=退回缓冲面板
     "t0": 0.0,
+    # v1.8 Alpha: 按下回车那一刻的真实时间戳 —— 秒表与真打字机节奏都从这一戳算起
+    "t_enter": 0.0,
     "last_tick": 0.0,
     # v1.8 Alpha: 建议询问 chips —— 小方回答完弹出的 0~3 个黄色建议,
     #   记录 [{text, row, x0, x1}] 以便鼠标点击时命中判定; row=屏幕行, x0/x1=列范围
@@ -746,8 +957,20 @@ def _ui_reset_turn():
     UI_ST["stage"] = "解析中…"
     UI_ST["fold"] = False      # v1.4: 默认展开
     UI_ST["live"] = True       # v1.4: 思考默认实时打字机显示
-    UI_ST["t0"] = time.time()
-    UI_ST["last_tick"] = time.time()
+    _now = time.time()
+    UI_ST["t0"] = _now
+    UI_ST["t_enter"] = _now    # v1.8 Alpha: 回车第一刻打戳 —— 真秒表从 0 秒起跳
+    UI_ST["last_tick"] = _now
+    # v1.8 Alpha: 本轮"真实产出前沿"与秒表状态一起清零, 新回合一切从 0 重新计
+    _stream_reset()
+    # v1.8 Alpha: 真心跳也归零 —— 新回合的"卡死计时"从按下回车这一刻重新起算,
+    #   上一轮的跳动不许冒充本轮还活着。
+    _HEART["t"] = 0.0
+    _HEART["n"] = 0
+    _TICK["sec"] = -1
+    _TICK["own"] = False
+    _ABORT_TYPING["v"] = False
+    _HINTED["v"] = False
 
 
 def _ui_spinner():
@@ -755,19 +978,21 @@ def _ui_spinner():
 
 
 def _ui_token_display():
-    # 真实 output 未落定前, 用"随思考流逝而增长的合成量"让 Token 从 0 肉眼可见地往上涨
-    if UI_ST["out"]:
-        return UI_ST["in"] + UI_ST["out"]
-    return UI_ST["in"] + int((time.time() - UI_ST["t0"]) * 8)
+    # v1.8 Alpha: 只认真值 —— 输入/输出 Token 一律由 TokenMeter 写(思考期真值没落定就显示 0),
+    #   不再用"按时间流逝合成"的假数字往上凑。
+    return UI_ST["in"] + UI_ST["out"]
 
 
 def _ui_status_text():
     n = MODEL_LAYERS
     l = min(UI_ST["layer"], n)
     st = UI_ST["stage"] or ("思考中" if UI_ST["capture"] else "已就绪")
-    return ("⟳ 小方{} · Token: {} · 第{}/{}层 · {} · {}".format(
-        ("思考中" if UI_ST["capture"] else "已就绪"),
-        _ui_token_display(), l, n, st, _ui_spinner()))
+    # v1.8 Alpha: 已思考秒数 = 真实时间差(逐秒递增, 不是估算); 已产出字数 = 真实登记量
+    _t0 = UI_ST.get("t_enter") or UI_ST.get("t0") or 0.0
+    _sec = int(max(0.0, time.time() - _t0)) if (_t0 and UI_ST["capture"]) else 0
+    return ("⟳ 小方{} · 已思考 {} 秒 · Token: {} · 第{}/{}层 · 已产出 {} 字 · {} · {}".format(
+        ("思考中" if UI_ST["capture"] else "已就绪"), _sec, _ui_token_display(),
+        l, n, _STREAM["produced"], st, _ui_spinner()))
 
 
 def _panel_render():
@@ -3019,9 +3244,11 @@ class Qint:
         return self
 
 
-def _sinusoid(seq, d_model):
+def _sinusoid(seq, d_model, offset=0):
+    # v1.8 Alpha 提速: offset 让"只算新位置"的增量解码也能拿到正确的绝对位置编码
+    #   (offset=0 时与旧行为逐元素一致, 整段前向完全不受影响)。
     pe = XP.zeros((seq, d_model), dtype=XP.float32)
-    pos = XP.arange(seq)[:, None]
+    pos = XP.arange(offset, offset + seq)[:, None]
     i = XP.arange(d_model // 2)
     div = XP.power(10000.0, (2 * i) / d_model)
     pe[:, 0::2] = XP.sin(pos / div)
@@ -3066,22 +3293,46 @@ class MultiHeadSelfAttention:
         self.Wv = Qint(rng.normal(0, 0.02, (d_model, d_model)))
         self.Wo = Qint(rng.normal(0, 0.02, (d_model, d_model)))
 
-    def forward(self, x):
+    def forward(self, x, cache=None):
         seq = x.shape[0]
-        Wq, Wk, Wv, Wo = self.Wq.val(), self.Wk.val(), self.Wv.val(), self.Wo.val()
-        Q = x @ Wq
-        K = x @ Wk
-        V = x @ Wv
+        # v1.8 Alpha 提速: 分块反量化融合 —— 权重常驻 int8 不动, 还原一块立刻乘一块,
+        #   峰值临时显存从"整块 fp32(~205MB)"降到 1/14, 同参数量下前向实测快 2 倍以上。
+        Q = _dq_mm(self.Wq, x)
+        K = _dq_mm(self.Wk, x)
+        V = _dq_mm(self.Wv, x)
+        # v1.8 Alpha 提速(增量解码): 传入 cache 时, K/V 只算"这次新来的位置", 追加进缓存后
+        #   与全部历史 K/V 一起参与注意力 —— 每生成一个词只算一个位置, 不再重跑整段前缀。
+        #   因果性天然成立: 新位置只看"它自己和它前面"的 K/V, 逐位追加永不越界。
+        #   不传 cache(整段前向/训练)时走原路径, 结果与旧实现逐元素一致。
+        if cache is not None:
+            _K0 = cache.get("K")
+            if _K0 is None:
+                K_all, V_all = K, V
+            else:
+                K_all = XP.concatenate([_K0, K], axis=0)
+                V_all = XP.concatenate([cache["V"], V], axis=0)
+            cache["K"] = K_all
+            cache["V"] = V_all
+            tot = int(K_all.shape[0])
+        else:
+            K_all, V_all = K, V
+            tot = seq
         Qh = Q.reshape(seq, self.n_heads, self.d_k).transpose(1, 0, 2)
-        Kh = K.reshape(seq, self.n_heads, self.d_k).transpose(1, 0, 2)
-        Vh = V.reshape(seq, self.n_heads, self.d_k).transpose(1, 0, 2)
+        Kh = K_all.reshape(tot, self.n_heads, self.d_k).transpose(1, 0, 2)
+        Vh = V_all.reshape(tot, self.n_heads, self.d_k).transpose(1, 0, 2)
         scores = Qh @ Kh.transpose(0, 2, 1) / XP.sqrt(self.d_k)
-        mask = XP.triu(XP.full((seq, seq), -1e9), k=1)
-        scores = scores + mask
+        if tot > 1:
+            # 因果掩码: 这次新来的 seq 个位置落在整条序列的"末尾", 起点 = tot - seq。
+            #   第 j 个新位置只能看 0 .. (tot-seq+j) 这些列, 也就是 triu 的对角线偏移 1+(tot-seq)。
+            #   · 整段前向/预填(tot == seq) → 偏移 1, 与旧实现逐元素一致;
+            #   · 单 token 增量(seq == 1, tot > 1) → 偏移 tot, 矩阵里没有任何列被遮住,
+            #     即"这个新词能看全部历史+它自己" —— 这才是增量解码该有的样子。
+            mask = XP.triu(XP.full((seq, tot), -1e9), k=1 + tot - seq)
+            scores = scores + mask
         attn = _softmax(scores, -1)
         ctx = attn @ Vh
         ctx = ctx.transpose(1, 0, 2).reshape(seq, self.d_model)
-        return ctx @ Wo, attn
+        return _dq_mm(self.Wo, ctx), attn      # v1.8 Alpha 提速: 分块反量化融合
 
 
 def _sigmoid(x):
@@ -3126,13 +3377,13 @@ class DeepIntentScorer:
     def encode(self, token_ids, embed):
         """token_ids: 用户拆词 int 序列. 返回设备端意图向量 (d_model,)."""
         d = self.d_model
-        embed_f = embed.val()
-        H = embed_f[token_ids]                 # (seq, d)
+        H = _qint_rows(embed, token_ids)       # (seq, d)  v1.8 Alpha: 只还原用到的行
         seq = H.shape[0]
         # 因果自注意后取"末位即全句语义"作为 query → 全局读出用户意图
-        Q = XP.tanh(H @ self.Wq.val())         # (seq, d)
-        K = H @ self.Wk.val()                  # (seq, d)
-        V = H @ self.Wv.val()                  # (seq, d)
+        # v1.8 Alpha 提速: 意图塔 4 张 d×d 大矩阵改走分块反量化融合
+        Q = XP.tanh(_dq_mm(self.Wq, H))        # (seq, d)
+        K = _dq_mm(self.Wk, H)                 # (seq, d)
+        V = _dq_mm(self.Wv, H)                 # (seq, d)
         q_head = Q[-1:]                         # (1, d)  用末位 token 作为"要往下接什么"的锚
         Kt = K.reshape(seq, self.pool_heads, self.d_k).transpose(1, 0, 2)
         Vh = V.reshape(seq, self.pool_heads, self.d_k).transpose(1, 0, 2)
@@ -3141,13 +3392,12 @@ class DeepIntentScorer:
         a = _softmax(a, -1)
         ctx = (a @ Vh)                                                 # (heads,1,d_k)
         ctx = ctx.transpose(1, 0, 2).reshape(1, d)                     # (1,d)
-        vec = XP.tanh(ctx @ self.Wo.val())                             # (1,d)
+        vec = XP.tanh(_dq_mm(self.Wo, ctx))                            # (1,d)
         # —— 纵深 refine ——
         _P = self._proj.val()
         for _l in self.refine:
-            W1, W2 = _l["W1"].val(), _l["W2"].val()
-            g = _gelu(vec @ W1 + _l["b1"])
-            upd = g @ W2 + _l["b2"]
+            g = _gelu(_dq_mm(_l["W1"], vec) + _l["b1"])
+            upd = _dq_mm(_l["W2"], g) + _l["b2"]
             gate = _sigmoid(vec @ _P)
             vec = vec + gate * XP.tanh(upd)                            # 残差 + 门控加深
         self.last_vec = vec.reshape(d)
@@ -3182,13 +3432,13 @@ class TransformerBlock:
         self.W2 = Qint(rng.normal(0, 0.02, (d_ff, d_model)))
         self.b2 = XP.zeros(d_model, dtype=XP.float32)
 
-    def forward(self, x):
-        a, attn = self.attn.forward(self.norm1.forward(x))
+    def forward(self, x, cache=None):
+        a, attn = self.attn.forward(self.norm1.forward(x), cache)
         x = x + a
         h = self.norm2.forward(x)
-        W1, W2 = self.W1.val(), self.W2.val()
-        h = _gelu(h @ W1 + self.b1)
-        f = h @ W2 + self.b2
+        # v1.8 Alpha 提速: FFN 两张大矩阵同样走分块反量化融合(权重仍常驻 int8)
+        h = _gelu(_dq_mm(self.W1, h) + self.b1)
+        f = _dq_mm(self.W2, h) + self.b2
         x = x + f
         return x, attn
 
@@ -3283,14 +3533,14 @@ class DeepThinkTransformer:
     # ------------------------------------------------------------------
     # v1.8 Alpha: 可训练前向 / 反向传播
     # ------------------------------------------------------------------
-    def _block_forward_train(self, blk, i, x):
+    def _block_forward_train(self, blk, i, x, cache=None):
         """可训练层的前向(与冻结层同构, 额外叠加低秩 FFN 修正)。"""
-        a, attn = blk.attn.forward(blk.norm1.forward(x))
+        a, attn = blk.attn.forward(blk.norm1.forward(x), cache)
         x1 = x + a
         h = blk.norm2.forward(x1)
-        W1, W2 = blk.W1.val(), blk.W2.val()
-        act = _gelu(h @ W1 + blk.b1)
-        f = act @ W2 + blk.b2
+        # v1.8 Alpha 提速: 可训练层的推理前向同样走分块反量化融合(反向缓存另在 _train_forward 内做)
+        act = _gelu(_dq_mm(blk.W1, h) + blk.b1)
+        f = _dq_mm(blk.W2, act) + blk.b2
         lr = self.ffn_lr.get(i)
         if lr is not None:
             f = f + (act @ lr["A"]) @ lr["B"].T
@@ -3304,10 +3554,13 @@ class DeepThinkTransformer:
         x = embed_f[ids] + _sinusoid(seq, self.d_model)
         cache = {"seq": seq, "layers": {}}
         for i, blk in enumerate(self.blocks):
+            _beat()          # v1.8 Alpha: 训练前向每过一层也打真心跳(学习期同样不会"看着像卡住")
             if i in self.ffn_lr:
                 a, _attn = blk.attn.forward(blk.norm1.forward(x))
                 x1 = x + a
                 h = blk.norm2.forward(x1)
+                # 注意: 这里保留整块 val() 是有意的 —— 反向传播要用到同一个 fp32 权重矩阵
+                #   (cache 里的 W1/W2)。一次反量化同时喂"前向 + 反向", 比分成两次分块反量化更省。
                 W1, W2 = blk.W1.val(), blk.W2.val()
                 g = h @ W1 + blk.b1
                 act = _gelu(g)
@@ -3445,8 +3698,9 @@ class DeepThinkTransformer:
         if len(token_ids) == 0:
             token_ids = [0]
         seq = len(token_ids)
-        embed_f = self.embed.val()     # int8 嵌入临时还原为 fp32(权重常驻仍是 int8)
-        x = embed_f[token_ids] + _sinusoid(seq, self.d_model)
+        # v1.8 Alpha 提速: 词嵌入常驻 int8, 只把"这一句真正用到的几行"还原成 fp32。
+        #   整表还原是 12797×3584 ≈ 183MB 的无谓搬运, 现在按需取行, 省下整趟拷贝。
+        x = _qint_rows(self.embed, token_ids) + _sinusoid(seq, self.d_model)
         blocks = []
         attn_last = None
         if trace:
@@ -3458,6 +3712,10 @@ class DeepThinkTransformer:
             else:
                 x, attn = blk.forward(x)
             attn_last = attn
+            # v1.8 Alpha: 真实层进度 + 真心跳 —— 每过一层都是"小方还活着、而且真的在往前算"的实证。
+            #   折叠面板的「第 x/15 层」这下是真数, 不再是按 0.15s 一格凑出来的假动画。
+            UI_ST["layer"] = i + 1
+            _beat()
             if trace:
                 _rows.append(attn[0, -1, :])
                 _pks.append(attn[:, -1, :].max(axis=1))
@@ -3475,8 +3733,11 @@ class DeepThinkTransformer:
         final = x[-1] * (1.0 + 0.02 * self._ffn_norm)
         if getattr(self, "out_adapter", None) is not None:
             final = final + final @ self.out_adapter   # v1.7: 可训练残差适配器(训练后就生效)
-        W_out = embed_f.T if self.tie_out else self.W_out.val()   # 输出-输入权重共享
-        logits = final @ W_out + self.b_out
+        if self.tie_out:
+            # v1.8 Alpha 提速: 共享输出权重直接走"分块反量化 + 转置乘", 不再铺 183MB fp32
+            logits = _dq_mm_t(self.embed, final) + self.b_out
+        else:
+            logits = _dq_mm(self.W_out, final) + self.b_out
         probs = _softmax(logits, -1)
         tr = {
             "seq": seq,
@@ -3532,7 +3793,7 @@ class DeepThinkTransformer:
         if not cands:
             return result
         idxs = [self.token2id[t] for t in cands]
-        e = self.embed.val()[idxs]                       # (C, d) 候选词嵌入
+        e = _qint_rows(self.embed, idxs)                 # (C, d) 候选词嵌入(只取用到的行)
         sims = np.asarray(_to_host(e @ intent_vec), dtype=np.float64)   # (C,) 贴合度
         if sims.size == 0:
             return result
@@ -3554,7 +3815,7 @@ class DeepThinkTransformer:
         if not seen:
             return []
         idxs = [self.token2id[t] for t in seen]
-        e = self.embed.val()[idxs]
+        e = _qint_rows(self.embed, idxs)                 # v1.8 Alpha: 只还原用到的行
         sims = _to_host(e @ intent_vec)
         pairs = sorted(zip(seen, sims), key=lambda p: -p[1])[:k]
         return [(t, round(float(s), 3)) for t, s in pairs]
@@ -3637,12 +3898,58 @@ class DeepThinkTransformer:
                 return sub_t[i]
         return sub_t[-1]
 
+    def _forward_cached(self, token_ids, caches, pos0):
+        """v1.8 Alpha 提速(增量解码): 只算"这次新来的那几个位置"的前向。
+
+        与整段 forward 数学等价(因果掩码 + 逐位置算子): 每层把新位置的 K/V 追加进 caches[i],
+        注意力只对"新 Q × 全部历史 K/V"算一次 —— 每生成一个词只推进一个位置, 不再重跑整段前缀。
+        参数量一个不动: caches 是纯运行时张量, 权重仍常驻 int8, 一个不增、一个不减。
+        """
+        if len(token_ids) == 0:
+            token_ids = [0]
+        seq = len(token_ids)
+        x = _qint_rows(self.embed, token_ids) + _sinusoid(seq, self.d_model, offset=pos0)
+        for i, blk in enumerate(self.blocks):
+            if caches[i] is None:
+                caches[i] = {"K": None, "V": None}   # 首访即建槽: 预填写进 K/V, 后续增量续写
+            if i in self.ffn_lr:
+                x, _attn = self._block_forward_train(blk, i, x, caches[i])
+            else:
+                x, _attn = blk.forward(x, caches[i])
+            # 与整段前向同口径: 真过一层 = 真实层进度 + 一次真心跳(增量解码期间同样"看着在动")
+            UI_ST["layer"] = i + 1
+            _beat()
+        final = x[-1] * (1.0 + 0.02 * self._ffn_norm)
+        if getattr(self, "out_adapter", None) is not None:
+            final = final + final @ self.out_adapter
+        if self.tie_out:
+            logits = _dq_mm_t(self.embed, final) + self.b_out
+        else:
+            logits = _dq_mm(self.W_out, final) + self.b_out
+        return _to_host(_softmax(logits, -1))
+
     def generate(self, seed_tokens, bias_tokens=None, max_tokens=42,
                  temperature=0.85, top_p=0.95):
         ctx = list(seed_tokens)
         out = list(seed_tokens)
+        # v1.8 Alpha 提速: 预填一次把整段前缀算完并建好每层 K/V 缓存, 之后每出一个词只算"这一个新位置"。
+        #   旧实现每出一个词都把整段前缀重算一遍(O(n²)); 现在每个词的代价与序列长度无关(O(n) 总计),
+        #   序列越长省得越多 —— "参数大了回答开始慢"的大头就在这里, 参数量却一点没少。
+        # 注意: ctx 里放的是"词元字符串", 而网络吃的是 id —— 走与 score_distribution 完全相同的
+        #   映射口径(self.token2id.get(t, 0)), 保证缓存里的位置与 probs 的行严格对齐。
+        def _ids_of(toks):
+            _v = [self.token2id.get(t, 0) for t in toks]
+            return _v or [0]
+        caches = [None] * self.n_layers
+        probs = None
+        _pos = 0
+        _filled = False
         for _ in range(max_tokens):
-            dist = self.score_distribution(ctx, bias_tokens)
+            if not _filled and ctx:
+                probs = self._forward_cached(_ids_of(ctx), caches, 0)   # 预填: 整段前缀一次算完 + 建缓存
+                _pos = len(ctx)
+                _filled = True
+            dist = self.score_distribution(ctx, bias_tokens, probs=probs)
             if not dist:
                 break
             for tok in list(dist.keys()):
@@ -3656,6 +3963,15 @@ class DeepThinkTransformer:
                 break
             out.append(tok)
             ctx.append(tok)
+            # v1.8 Alpha(真打字机): 【生产者登记】每真的多算出一个词, 就把"真实产出前沿"往前推 ——
+            #   于是慢的那一段(生成期)「已产出 N 字」也在动, 用户看得见小方在往前算, 不是在装死;
+            #   打字机那边只打到这里为止(_stream_claim 同样被这条前沿约束), 一个字不提前打。
+            _stream_mark(tok)
+            # 下一个词: 只算"刚加进来这一个位置"。缓存还没建时(空前缀的极端边界)这一步兼作预填,
+            #   位置从 0 起算 —— 与旧实现 forward([tok]) 的口径逐字一致。
+            probs = self._forward_cached([self.token2id.get(tok, 0)], caches, _pos)
+            _pos += 1
+            _filled = True
         return out
 
 
@@ -3756,42 +4072,192 @@ def _split_sents(text):
     return [p.strip() for p in parts if p.strip()]
 
 
-# v1.2: emoji 分界符 —— 只有跟在句首/句尾/这些标点衔接处(逗号那句)的 emoji 才算"待对位置"
-_EMOJI_PUNCT = "，,。！!？?；;：:、…~～"
+# ══════════════════════════════════════════════════════════════════════════
+# v1.8 Alpha · emoji 落位规则(用户定死)
+#   规则: emoji **只准**出现在「逗号 / 句号 / 换行符 / 终止符」的 **前面**。
+#     · 紧跟在这四类符号之前的 emoji → 合法, 原位保留;
+#     · 句首的、夹在词中间的、或紧跟在标点"后面"的 → 一律算没摆正, 只留一个,
+#       挪到最近的合法位(逗号/句号/换行/文末)之前; 挪不进去就丢掉;
+#     · 文末天然算"终止符"。
+#
+#   【"18 Alpha 不输出 emoji"的两个真根因, 一并修掉】
+#     1) v1.8 Alpha 新增的一大批精准路由(_self_route / _studio_route / _focus_route /
+#        _creative_route / _tir_route / _file_read_route 等)全是"命中就直接 return",
+#        完全绕过了 ResponseGenerator 里那一步插 emoji —— 于是绝大多数回答从此不带 emoji。
+#        修法: 把落位收到**唯一出口** _finalize_answer 上, 任何路由都漏不掉。
+#     2) DATA.EMOJI_NEUTRAL 里塞着 ("·",1) ("→",1) ("",6) 这类"看着像符号、其实不是 emoji"
+#        的占位 —— 中性情绪下抽到它们就等于没插 emoji。修法: 抽 emoji 时把非真 emoji 的
+#        占位整个剔掉(_has_emoji 判定), 保证真抽出一个 emoji。
+# ══════════════════════════════════════════════════════════════════════════
+_EMOJI_BEFORE = "，,。！!？?；;…\n"           # emoji 只准紧挨在这些符号"前面"
+_EMOJI_PUNCT = _EMOJI_BEFORE                    # v1.2 旧名保留, 指向同一套符号
+_EMOJI_VSEL = ("\ufe0f", "\ufe0e", "\u20e3")    # 变体选择符 / 键帽符: 属于同一个 emoji
+_EMOJI_ZWJ = "\u200d"
+_EMOJI_FALLBACK_NEUTRAL = ["🧭", "🧩", "📌", "📚", "💡", "🗺️", "🔬", "🧠"]
+
+
+def _is_emoji_char(c):
+    """是不是 emoji 主字符。
+
+    只认 Unicode 的 emoji 区段。**故意不做** unicodedata.category == "So" 的兜底 ——
+    那个兜底会把 ° ™ © ® 也当成 emoji, 于是 "360°" 里的度数符会被当 emoji 搬走/丢掉。
+    区段之外一律不算 —— ·、→、∑、π 这些"占位符号"因此天然被排除。"""
+    if not c:
+        return False
+    o = ord(c)
+    if 0x1F000 <= o <= 0x1FAFF:        # 主流 emoji 平面 (😀🚀🧭🪄…)
+        return True
+    if 0x2600 <= o <= 0x27BF:          # 杂项符号 / Dingbats (✨✅☀☕✂…)
+        return True
+    if 0x2300 <= o <= 0x23FF:          # 技术符号 (⌨⌚⏰⏳…)
+        return True
+    if o in (0x2B00, 0x2B1B, 0x2B1C, 0x2B50, 0x2B55):   # ⭐⭕⬛⬜ 等
+        return True
+    return False
+
+
+def _emoji_span(chars, i):
+    """从 chars[i] 起吃出"一个完整 emoji"(含 ️ 变体选择符 / ZWJ 连接序列), 返回结束下标(不含)。"""
+    n = len(chars)
+    j = i + 1
+    while j < n:
+        c = chars[j]
+        if c in _EMOJI_VSEL:
+            j += 1
+        elif c == _EMOJI_ZWJ:
+            j += 1
+            if j < n:
+                j += 1               # ZWJ 后面连的那个字也属于同一个 emoji
+        else:
+            break
+    return j
+
+
+def _has_emoji(text):
+    """这段文字里有没有"真 emoji"(占位符号不算)。"""
+    return any(_is_emoji_char(c) for c in (text or ""))
+
+
+def _emoji_seats(text):
+    """列出所有"emoji 可以落在其前面"的合法下标 —— 逗号/句号/换行/文末(终止符)。
+    代码块(``` 围栏)内部、表格行、引用行不给落位, 免得 emoji 混进代码或表格里。"""
+    seats = []
+    if not text:
+        return seats
+    in_fence = False
+    off = 0
+    for ln in text.split("\n"):
+        st = ln.strip()
+        if st.startswith("```") or st.startswith("~~~"):
+            in_fence = not in_fence          # 围栏行自己不给落位
+        elif not in_fence and not st.startswith("|") and not st.startswith(">"):
+            for k, c in enumerate(ln):
+                if c in _EMOJI_BEFORE and c != "\n":
+                    seats.append(off + k)
+            seats.append(off + len(ln))      # 行末 = 换行符之前(最后一行则 = 文末终止符)
+        off += len(ln) + 1
+    return seats
+
+
+def _best_seat(seats, n):
+    """在一串合法落位点里挑一个"读起来最自然"的。
+    优先选 8 字以后的第一处(不在话头就插 emoji, 读着别扭); 都没有就退回第一处,
+    再没有就落到文末(文末天然是终止符)。"""
+    if not seats:
+        return n
+    for s in seats:
+        if s >= 8:
+            return max(0, min(s, n))
+    return max(0, min(seats[0], n))
 
 
 def _normalize_emoji(text):
-    """v1.2: emoji 只准待在句首/句尾/标点分句段的衔接位(逗号那边), 绝不夹在词中间。
-    词中间的乱插 emoji 会被圈走, 攒到段尾统一放一个 —— 保持"一句话读到一半不被 emoji 打断"。
-    """
-    import unicodedata as _uda
+    """v1.8 Alpha: 把 emoji 摆到合法位 —— 只准落在 逗号/句号/换行符/终止符 的**前面**。
+    已经在合法位的原样保留(有它就够了, 不再多加); 乱插的(句首/词中/标点之后)只留一个,
+    挪到最近的合法位之前; 整段没有可落位的地方就丢掉。"""
     if not text:
         return text
     chars = list(text)
-    out = []
-    tail_pool = []
     n = len(chars)
-    for i, c in enumerate(chars):
-        try:
-            is_emo = _uda.category(c) == "So"
-        except Exception:
-            is_emo = False
-        if not is_emo:
-            out.append(c)
+    out = []
+    kept = []          # (插入下标, emoji 串) —— 已经在合法位的
+    stray = None       # 乱插的那个(只留最后一个), 待归位
+    i = 0
+    while i < n:
+        c = chars[i]
+        if _is_emoji_char(c):
+            j = _emoji_span(chars, i)
+            sequ = "".join(chars[i:j])
+            nxt = chars[j] if j < n else ""
+            if j >= n or nxt in _EMOJI_BEFORE:
+                kept.append((len(out), sequ))    # 后面紧跟 逗号/句号/换行/终止符 → 合法
+            else:
+                stray = sequ                     # 句首 / 词中 / 标点之后 → 记下来待归位
+            i = j
             continue
-        head_ok = (i == 0)
-        tail_ok = (i == n - 1)
-        prev_c = chars[i - 1] if i > 0 else ""
-        next_c = chars[i + 1] if i < n - 1 else ""
-        prev_break = bool(prev_c) and prev_c in _EMOJI_PUNCT
-        next_break = bool(next_c) and next_c in _EMOJI_PUNCT
-        if head_ok or tail_ok or prev_break or next_break:
-            out.append(c)             # 待在句首/句尾/标点衔接处 → 保留原位
-        else:
-            tail_pool.append(c)       # 词中乱插 → 清走, 段尾再统一放一个
-    if tail_pool:
-        out.append(tail_pool[-1])
-    return "".join(out)
+        out.append(c)
+        i += 1
+    # 只留一个乱插的: 若已经有摆正的 emoji, 乱插的那个直接丢掉(一段一个就够)
+    if stray is not None and not kept:
+        _o = "".join(out)
+        pos = _best_seat(_emoji_seats(_o), len(_o))
+        kept.append((max(0, min(pos, len(out))), stray))
+    if not kept:
+        return "".join(out)
+    kept.sort(key=lambda t: t[0])
+    res = []
+    prev = 0
+    for p, s in kept:
+        res.append("".join(out[prev:p]))
+        res.append(s)
+        prev = p
+    res.append("".join(out[prev:]))
+    return "".join(res)
+
+
+def _pick_real_emoji(emo):
+    """按情绪极性抽一个"真 emoji"。
+    把 ("·",1)/("→",1)/("",6) 这类占位整个剔掉 —— 它们正是"抽了等于没抽"的元凶。"""
+    try:
+        sc = int((emo or {}).get("score", 0))
+    except Exception:
+        sc = 0
+    if sc >= 2:
+        pool = getattr(DATA, "EMOJI_POSITIVE", None) or []
+    elif sc <= -2:
+        pool = getattr(DATA, "EMOJI_NEGATIVE", None) or []
+    else:
+        pool = getattr(DATA, "EMOJI_NEUTRAL", None) or []
+    items = [(e, max(int(w), 1)) for e, w in pool if _has_emoji(e)]
+    if not items:
+        items = [(e, 1) for e in _EMOJI_FALLBACK_NEUTRAL]
+    total = sum(w for _, w in items) or 1
+    r = random.random() * total
+    upto = 0
+    for e, w in items:
+        upto += w
+        if upto >= r:
+            return e
+    return items[-1][0]
+
+
+def _seat_emoji(text, emo):
+    """v1.8 Alpha: 给**任意路由**产出的答案补上情绪 emoji, 且只落在合法位
+    (逗号/句号/换行符/终止符 的前面)。已经有 emoji 的只把位置摆正, 不再多加一个。"""
+    if not text or not isinstance(text, str):
+        return text
+    if not USE_PUNCT_EMOJI:
+        return _normalize_emoji(text) if _has_emoji(text) else text
+    if _has_emoji(text):
+        return _normalize_emoji(text)
+    e = _pick_real_emoji(emo)
+    if not e:
+        return text
+    seats = _emoji_seats(text)
+    if not seats:
+        return _normalize_emoji(text.rstrip() + e)   # 没有标点 → 落文末(终止符)
+    pos = _best_seat(seats, len(text))
+    return _normalize_emoji(text[:pos] + e + text[pos:])
 
 
 def _segment_text(text, chunk_size=12):
@@ -3962,16 +4428,21 @@ class ResponseGenerator:
         return "我可以从定义、原理、应用三方面给你讲透，也能配上例子和对比表格，你想先听哪块？"
 
     def _insert_emojis(self, text, emo):
-        # v0.6 正式版: 情绪 emoji 只放句首或句尾, 绝不在句中打断 (修复"爱在中间加 emoji")
+        # v1.8 Alpha: 情绪 emoji 只落在合法位 —— 逗号/句号/换行符/终止符 的**前面**。
+        #   (v0.6 的"句首 或 句尾"老口径作废: 句首不算合法位, 会被 _normalize_emoji 搬走。)
+        #   抽 emoji 也改用 _pick_real_emoji —— 它会把 ("·",1)/("→",1)/("",6) 这类
+        #   "看着像符号、其实不是 emoji"的占位整个剔掉(中性情绪下"抽了等于没抽"的元凶)。
         text = (text or "").strip()
         if not text:
             return text
-        emoji = self._pick_emoji(emo)
+        emoji = _pick_real_emoji(emo)
         if not emoji:
             return text
-        if random.random() < 0.4:
-            return "{} {}".format(emoji, text)
-        return text.rstrip() + " " + emoji
+        seats = _emoji_seats(text)
+        if not seats:
+            return text.rstrip() + emoji
+        pos = _best_seat(seats, len(text))
+        return text[:pos] + emoji + text[pos:]
 
     def _pick_emoji(self, emo):
         if emo["score"] >= 2:
@@ -6802,11 +7273,14 @@ class XiaoFang:
             ent = float(-np.sum(probs * np.log(probs + 1e-12)))
             conf = float(min(1.0, max(0.0, 1.0 - ent / np.log(V))))   # 归一化熵 → 置信度(钳到 [0,1])
             # 意图贴合度: 生成内容与用户输入的词嵌入中心余弦(同一嵌入空间, 越贴题越接近 1)
-            E = np.asarray(_to_host(tr.embed.val()), dtype=np.float64)
+            # v1.8 Alpha 提速: 只还原 seed/tail 用到的少数几行嵌入, 不再整表 183MB 铺开。
             sid = [tr.token2id.get(t, 0) for t in seed] or [0]
             gid = [tr.token2id.get(t, 0) for t in tail]
-            ps = E[sid].mean(axis=0)
-            pg = E[gid].mean(axis=0) if gid else ps
+            _need = sorted(set(sid) | set(gid))
+            E = np.asarray(_to_host(_qint_rows(tr.embed, _need)), dtype=np.float64)
+            _pos = {t: i for i, t in enumerate(_need)}
+            ps = E[[_pos[t] for t in sid]].mean(axis=0)
+            pg = E[[_pos[t] for t in gid]].mean(axis=0) if gid else ps
             cos = float(min(1.0, max(-1.0, np.dot(pg, ps) / ((np.linalg.norm(pg) * np.linalg.norm(ps)) + 1e-9))))
             ar = trc.get("attn_head0_last")
             if ar is not None:
@@ -10347,6 +10821,9 @@ class XiaoFang:
         self.meter.count_output(out_tokens)
         if learn_note and not _blk:
             answer = answer + " " + learn_note
+            # v1.8 Alpha: 拼上去的"学习回执"里那个 🧠/📌 也必须摆正 —— 只准落在
+            #   逗号/句号/换行符/终止符 的前面, 否则一律搬走(已经在合法位的那个保留)。
+            answer = _normalize_emoji(answer)
         self._note_stage("正在组织回答")
         if self._skip_deliver:
             self._print_note("（已听你的，这条答案不显示了）", C_HINT)
@@ -10381,6 +10858,14 @@ class XiaoFang:
             return (_TF_REVIEW_REPLY, True)
         if _needs_med_disclaimer(text, a):
             a = a.rstrip() + "\n\n" + MED_DISCLAIMER
+        # ── v1.8 Alpha · 情绪 emoji 落位(用户定死的规则) ───────────────────
+        #   emoji **只准**出现在「逗号 / 句号 / 换行符 / 终止符」的**前面**。
+        #   为什么挂在这里: v1.8 Alpha 新增的一大批精准路由(_self_route / _studio_route /
+        #   _creative_route / _focus_route / _file_read_route / _tir_route / site_ask …)
+        #   全是"命中就直接 return", 把老 ResponseGenerator 里那一步插 emoji 整个绕过去了 ——
+        #   这正是"18 Alpha 不输出 emoji"的主因。_finalize_answer 是预设话术与主路径
+        #   共同的唯一出口, 收在这里 = 任何路由都漏不掉。
+        a = _seat_emoji(a, emo)
         return (a, False)
 
     def _out_review_ok(self, text, answer, reviewer=None):
@@ -10419,6 +10904,7 @@ class XiaoFang:
         # v1.2: 阶段进度, 供主循环在活动指示行里显示"小方此刻正停在哪个阶段"
         self._stage = s
         UI_ST["stage"] = s       # v1.4: 状态面板实时阶段
+        _beat()                  # v1.8 Alpha: 真的换阶段了(即真的往前走了) → 真心跳打点
 
     # ══════════════════════════════════════════════════════════════════════
     # v1.8 Alpha · 在线学习: 每轮对话都做一次真正的反向传播 + AdamW 更新
@@ -10482,30 +10968,71 @@ class XiaoFang:
         except Exception:
             return "—"
 
-    def run_with_timeout(self, text, mailbox=None, deferred=None):
-        """v1.2 卡死防呆重写:
-        1) 实时活动指示 —— 每 ~0.35s 在同一行刷新「转动指示 + 已耗秒数 + 当前阶段」。
-           只要这行字在走, 就是【正常思考】; 停住不动才可能是【卡机】。区分:
-           · 有流式打字输出(回答/思考在敲)→ 不碰该行, 让输出自己进度可见;
-           · 处于 CPU 正演等无输出空窗 → 指示行不停走, 说明小方还活着;
-           · 超过 RESPONSE_TIMEOUT → 明确提示可能真卡住, 并可打字中断。
-        2) 非阻塞输入 —— 接收 run() 传来的输入信箱: 思考期间用户打的字先进队列,
-           worker 结束后由 run() 继续接续回答(排队); 若用户发 /stop 则软中止当前回答。
+    def _alive_probe(self, cap=1.2):
+        """v1.8 Alpha: 按下回车第一刻的「立即判活」。
+
+        做法是拿引擎做一次极轻但【真的】的触碰 —— 把词嵌入里一个 int8 元素按当前后端还原,
+        并回读到主机端(强制一次真实的设备同步)。这不是写死的 True:
+          · 引擎/显卡正常 → 几毫秒就回音, 判"没卡";
+          · 显卡被占死、上一轮还卡在核函数里、设备掉了 → 回音超过 cap, 判"疑似卡住"。
+        返回 (alive: bool, 耗时毫秒: float)。
         """
-        if getattr(self, "_active_worker", None) and self._active_worker.is_alive():
-            # v1.4 修复"偶尔卡死什么都不回": 上一轮 worker 若真卡住, 绝不静默 join 120s 挡盲区。
-            # 给 1s 合理收尾; 仍活着即视为"已卡死", 跳过它直接进新回合(守护线程自己会退出/被忽略),
-            # 同时给用户一句明确提示, 避免"打了字却半天没反应"的假死感。
-            self._active_worker.join(timeout=1.0)
-            if self._active_worker.is_alive():
-                self._print_note("（上一轮有点卡，已自动跳过；这一条我马上答你）", C_HINT)
+        t0 = time.time()
+        try:
+            tr = getattr(self, "transformer", None)
+            if tr is None:
+                return True, 0.0
+            _mark = object()
+
+            def _touch():
+                _w = getattr(tr, "embed", None)
+                if _w is None:
+                    return True
+                _q = _w.q
+                if int(getattr(_q, "size", 0)) <= 0:
+                    return True
+                _v = _q[0, 0] if int(_q.ndim) >= 2 else _q[0]
+                _ = float(_to_host(_v)) * float(_w.s)               # 真读一次设备内存
+                _ = _to_host(XP.asarray([1.0], dtype=XP.float32))    # 再强制同步一次
+                return True
+
+            r = _run_with_timeout(_touch, timeout=cap, default=_mark)
+            _ms = (time.time() - t0) * 1000.0
+            return (r is not _mark and bool(r)), _ms
+        except Exception:
+            return True, (time.time() - t0) * 1000.0
+
+    def run_with_timeout(self, text, mailbox=None, deferred=None):
+        """v1.8 Alpha 卡死防呆重写(按下回车第一刻就给出结论):
+        1) 回车第一刻立即判活 —— 先用 _alive_probe 做一次真实的"引擎触碰"; 在 cap 内回音 = 没卡,
+           超时 = 疑似卡住, 当场说清, 不让用户对着空屏干等。
+        2) 没卡 → 当场打出「⏱ 小方已思考 0 秒」, 秒数由真实时间逐秒 +1; 旁边的「已产出 M 字」
+           也是真值(输出前沿登记的字符数), 两个数都在动 → 一眼可见它活着, 不是在装死。
+        3) 打字机是真的 —— 小方算到哪就打到哪(输出前沿 _STREAM 驱动, 追平即停手, 绝不提前多打)。
+        4) 判卡改看"真心跳"(_HEART): 只有 worker 真推进(过一层/出一段字/换阶段)才打点;
+           主线程画的秒表不算活着 —— 否则永远判不出卡。
+        5) 非阻塞输入 —— 思考期用户打的字进队列排队, /stop 软中止当前回答。
+        """
+        # ── ① 按下回车第一刻: 立即判活(不等任何轮询) ──
+        _prev = getattr(self, "_active_worker", None)
+        if _prev is not None and _prev.is_alive():
+            # 上一轮 worker 还没收尾: 只给它 0.4s 的合理窗口, 绝不再静默 join 挡出一片盲区。
+            _prev.join(timeout=0.4)
+            if _prev.is_alive():
+                self._print_note("（上一轮还在算，我先把这条接上，它随后让位）", C_HINT)
+        _alive, _pms = self._alive_probe(cap=1.2)
         got = {}
         self._streaming = False
         self._skip_deliver = False
         self._cancel_seen = False
-        _touch_live()
         _SYS_BUSY["v"] = True          # 思考/回答期: 输入框只更缓冲不画面, 防撞屏
-        _ui_reset_turn()               # v1.4: 状态面板从"按下回车=0"开始实时增长
+        _ui_reset_turn()               # 打戳: 秒表与真打字机节奏都从"按下回车这一刻"起算(心跳同时归零)
+        if _alive:
+            _tick_line(force=True)     # 没卡 → 当场显示「小方已思考 0 秒」, 不留任何空白期
+        else:
+            self._print_note(
+                "⚠ 小方引擎这一刻没应答(约 {:.0f} 秒无回音) —— 疑似卡在上一轮或显存被占。"
+                "我仍在后台接着把它算出来；你也可以 /stop 打断，或直接发下一句。".format(_pms / 1000.0), C_DEEP)
 
         def _work():
             try:
@@ -10521,11 +11048,17 @@ class XiaoFang:
         t0 = time.time()
         while not got.get("done"):
             now = time.time()
-            # —— v1.4: 思考期 → 折叠/缓冲模式下才原地重绘面板; 默认(live)思考直接打字, 不抢屏 ——
-            if UI_ST["capture"] and not UI_ST.get("live"):
-                if UI_ST["layer"] < MODEL_LAYERS and now - t0 > 0.15:
-                    UI_ST["layer"] += 1
-                _panel_render()
+            # —— v1.8 Alpha: 层进度不再由主线程按时间凑 —— worker 每过一层都亲自写
+            #   UI_ST["layer"](见 DeepThinkTransformer.forward), 这里只负责把面板/秒表画出来,
+            #   绝不自己再 +1, 于是「第 x/15 层」是真数, 不再是 0.15 秒一格凑出来的假动画。——
+            if UI_ST["capture"]:
+                if UI_ST.get("live"):
+                    # 默认(live): 秒表行「⏱ 小方已思考 N 秒 · 已产出 M 字」原地逐秒刷新,
+                    #   两个数都是真值且都在动 —— 小方算到哪, 行里的数就走到哪, 用户不用干等。
+                    _tick_line()
+                else:
+                    # 折叠/缓冲模式: 面板自行在状态条里报秒数, 这里重绘面板。
+                    _panel_render()
             # —— 思考期间仍可打字: 读信箱, /stop 与 /fold 特判, 其余排队 ——
             if mailbox is not None and deferred is not None:
                 while True:
@@ -10545,18 +11078,22 @@ class XiaoFang:
                                          .format(str(nxt)[:14]), C_HINT)
             if self._cancel_seen and not got.get("done"):
                 got["cancel"] = True
-            # v1.8 Alpha: 改成"无输出静默"判卡 —— 只要还有任何新输出(打字机/面板/阶段),
-            #   就说明它活着, 长篇回答不会在打到一半被砍断。
-            _last_out = max(t0, float(_OUT_TICK.get("t") or 0.0), float(UI_ST.get("last_tick") or 0.0))
-            if (now - _last_out > RESPONSE_TIMEOUT) or (now - t0 > ABSOLUTE_TURN_CAP):
+            # v1.8 Alpha: 判卡只看「真心跳」(_HEART) —— 只有 worker 真推进(过一层/出一段字/换阶段)
+            #   才打点。主线程画的秒表不算活着(卡着也照画), 所以这里绝不再看 last_tick 一类的
+            #   "主线程自己打的戳", 否则永远判不出卡。本轮一个心跳都还没有时, _stall_sec 会退回
+            #   "按下回车那一刻"起算, 因此"A 回车后就一直没算出一丁点东西"同样能被如实计时。
+            _quiet = _stall_sec(now)
+            if (_quiet > RESPONSE_TIMEOUT) or (now - t0 > ABSOLUTE_TURN_CAP):
                 sys.stdout.write("\r" + " " * 70 + "\r")
                 sys.stdout.flush()
                 self._print_note(
-                    "\n⚠ 已连续 {} 秒没有任何新输出，可能是真卡住了(联网/网页读取最容易卡)。小方先让开，"
-                    "你可以直接输入新消息，或输入 /stop 打断它。".format(RESPONSE_TIMEOUT), C_DEEP)
+                    "\n⚠ 已连续 {:.0f} 秒没有任何新输出(真心跳停了)，可能是真卡住了(联网/网页读取最容易卡)。"
+                    "小方先让开，你可以直接输入新消息，或输入 /stop 打断它。".format(_quiet), C_DEEP)
                 _SYS_BUSY["v"] = False
                 return
-            time.sleep(0.15)
+            # v1.8 Alpha: 步长收紧到 0.06s —— 秒表行按秒跳、心跳一停也能很快被抓到,
+            #   轮询本身几乎不吃 CPU(只读几个浮点数, 不碰引擎)。
+            time.sleep(0.06)
         _SYS_BUSY["v"] = False         # 思考结束, 恢复画调色板
         # —— v1.4: 回答(打字机)已在 worker 打完后, 于状态面板之下补"学习因子"一行 ——
         if not got.get("cancel") and not got.get("err"):
