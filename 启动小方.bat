@@ -1,16 +1,16 @@
 @echo off
 rem ============================================================
-rem   Xiaofang FlphaLit 1.5 (Official) launcher
+rem   Xiaofang FlphaLit 1.6 (Official) launcher
 rem   ASCII-safe (no non-ASCII bytes) + chcp 65001 + goto-flow
 rem   so cmd never flash-closes. Run this .bat to start Xiaofang.
 rem ============================================================
 chcp 65001 >nul
-title Xiaofang FlphaLit 1.5 Official launcher
+title Xiaofang FlphaLit 1.6 Official launcher
 setlocal
 
 echo.
 echo  ================================================
-echo    Xiaofang FlphaLit 1.5 - env check and launch
+echo    Xiaofang FlphaLit 1.6 - env check and launch
 echo  ================================================
 echo.
 
@@ -28,13 +28,13 @@ echo  [OK] Python ready: %PY%
 echo.
 
 rem ---------- deps ----------
-%PY% -c "import numpy, colorama, pyfiglet, ddgs, psutil" >nul 2>nul
+%PY% -c "import numpy, colorama, pyfiglet, ddgs, psutil, requests, bs4" >nul 2>nul
 if not errorlevel 1 goto DEPSOK
 
 echo  [..] Some deps missing. Installing via pip ...
 %PY% -m pip install --quiet --upgrade pip
-%PY% -m pip install --quiet numpy colorama pyfiglet ddgs psutil
-%PY% -c "import numpy, colorama, pyfiglet, ddgs, psutil" >nul 2>nul
+%PY% -m pip install --quiet numpy colorama pyfiglet ddgs psutil requests beautifulsoup4
+%PY% -c "import numpy, colorama, pyfiglet, ddgs, psutil, requests, bs4" >nul 2>nul
 if errorlevel 1 goto DEPFAIL
 
 :DEPSOK
@@ -44,7 +44,7 @@ rem ---------- run ----------
 echo  [OK] Launching Xiaofang ...
 echo.
 cd /d "%~dp0"
-%PY% "xiaofang_v15.py"
+%PY% "xiaofang_v16.py"
 echo.
 echo  [i] Xiaofang exited. Press any key to close.
 pause
@@ -59,6 +59,6 @@ exit /b 1
 
 :DEPFAIL
 echo  [!!] Dependency install failed. Install manually then relaunch:
-echo      pip install numpy colorama pyfiglet ddgs psutil
+echo      pip install numpy colorama pyfiglet ddgs psutil requests beautifulsoup4
 pause
 exit /b 1
