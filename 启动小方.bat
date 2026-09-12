@@ -1,16 +1,16 @@
 @echo off
 rem ============================================================
-rem   Xiaofang FlphaLit 1.7 Flash launcher
+rem   Xiaofang FlphaLit 1.8 Alpha launcher
 rem   ASCII-safe (no non-ASCII bytes) + chcp 65001 + goto-flow
 rem   so cmd never flash-closes. Run this .bat to start Xiaofang.
 rem ============================================================
 chcp 65001 >nul
-title Xiaofang FlphaLit 1.7 Flash launcher
+title Xiaofang FlphaLit 1.8 Alpha launcher
 setlocal
 
 echo.
 echo  ================================================
-echo    Xiaofang FlphaLit 1.7 Flash - env check and launch
+echo    Xiaofang FlphaLit 1.8 Alpha - env check and launch
 echo  ================================================
 echo.
 
@@ -44,7 +44,7 @@ rem ---------- run ----------
 echo  [OK] Launching Xiaofang ...
 echo.
 cd /d "%~dp0"
-%PY% "xiaofang_v17alpha.py"
+%PY% "xiaofang_v18alpha.py"
 echo.
 echo  [i] Xiaofang exited. Press any key to close.
 pause
