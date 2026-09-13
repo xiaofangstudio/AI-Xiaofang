@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 小方 FlphaLit Covi 1 · t2–t7 验收实测报告</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1b1f24; --ink2:#5b6672; --line:#e3e7ec;
+    --ok:#1a7f4b; --okbg:#e8f6ee; --warn:#9a5b00; --warnbg:#fdf3e2; --accent:#2b5fa8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 72px}
+  header{border-bottom:2px solid var(--ink);padding-bottom:18px;margin-bottom:28px}
+  h1{margin:0 0 8px;font-size:28px;letter-spacing:.3px}
+  .sub{color:var(--ink2);font-size:14px}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--ink)}
+  p{margin:10px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;background:var(--card)}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f7;font-weight:600;white-space:nowrap}
+  td.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+  tr.hi td{background:#f2f7ff}
+  code{background:#eef1f5;padding:1.5px 5px;border-radius:4px;font-size:12.5px;
+       font-family:Consolas,"Cascadia Mono",monospace}
+  pre{background:#1e2430;color:#d7e0ea;padding:14px 16px;border-radius:8px;overflow:auto;
+      font:12.5px/1.6 Consolas,"Cascadia Mono",monospace}
+  .tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:600}
+  .ok{background:var(--okbg);color:var(--ok)}
+  .warn{background:var(--warnbg);color:var(--warn)}
+  ul{margin:8px 0 8px;padding-left:22px}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:190px 1fr;gap:6px 16px;font-size:13.5px}
+  .kv div:nth-child(odd){color:var(--ink2)}
+  footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink2);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>AI 小方 FlphaLit Covi 1 · t2–t7 验收实测报告</h1>
+  <div class="sub">实测日期 2026-09-13 &nbsp;·&nbsp; 主程序 <code>xiaofang_covi1.py</code>（649 KB，一套源码） &nbsp;·&nbsp; 档位 Lite / Pro / Ultra</div>
+</header>
+
+<div class="card">
+  <div class="kv">
+    <div>结论</div><div><span class="tag ok">全部通过</span> 端到端验收 30 项用例 / 0 失败；三档结构、能力、答案逐档分野；语法自检通过。</div>
+    <div>硬件</div><div>RTX 4070 Laptop 8 GB，测试期间 <code>学习小说.py</code> 长期占满显卡（100% / 4905 MiB）</div>
+    <div>本次新增</div><div>三档「同一句提问」真实对话实测（t6/t7 收尾证据）</div>
+  </div>
+</div>
+
+<h2>一、三档结构真的分裂了</h2>
+<p>三档各自选出的架构与参数量互不相同，且逐档递增，全部守住「比 Lite 最多 +0.1B」的红线，无一台被内存闸门降级。</p>
+
+<table>
+  <thead>
+    <tr><th>档位</th><th>模型名</th><th>本体参数</th><th>含意图塔总参数</th><th>较 Lite</th><th>D</th><th>L</th><th>H</th><th>显存预算</th><th>降级</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Lite</td><td>FlphaLit Wide3584 · 2.40B</td><td class="num">2,398,842,880</td><td class="num">2.4173 B</td><td class="num">基准</td><td class="num">3584</td><td class="num">15</td><td class="num">28</td><td class="num">2.60 GB</td><td>否</td></tr>
+    <tr class="hi"><td>Pro</td><td>FlphaLit Pro3648 · 2.48B</td><td class="num">2,483,704,320</td><td class="num">2.5052 B</td><td class="num">+0.0879 B</td><td class="num">3648</td><td class="num">15</td><td class="num">32</td><td class="num">3.60 GB</td><td>否</td></tr>
+    <tr class="hi"><td>Ultra</td><td>FlphaLit Ultra3660 · 2.50B</td><td class="num">2,499,780,000</td><td class="num">2.5169 B</td><td class="num">+0.0996 B</td><td class="num">3660</td><td class="num">15</td><td class="num">30</td><td class="num">4.60 GB</td><td>否</td></tr>
+  </tbody>
+</table>
+
+<h2>二、八项「更专业」的能力逐档抬升</h2>
+<p>不是只改了个名字，档位能力表里每一项都在真实调用点上生效（思考轮、嵌套词元、意图塔层深/头数/重推、验算门槛、复想轮数、输入读取量、专业等级）。</p>
+
+<table>
+  <thead>
+    <tr><th>能力项</th><th>Lite</th><th>Pro</th><th>Ultra</th><th>作用</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>总思考轮数 THINK_TURNS</td><td class="num">3</td><td class="num">4</td><td class="num">5</td><td>同一问题允许想几轮</td></tr>
+    <tr><td>每层嵌套思考词元</td><td class="num">10</td><td class="num">14</td><td class="num">18</td><td>每层让模型自己往下想的词数</td></tr>
+    <tr><td>意图塔层深 / 头数 / 重推</td><td class="num">4 / 2 / 1</td><td class="num">6 / 4 / 2</td><td class="num">8 / 6 / 3</td><td>意图定向塔，权重共享、参数零增长</td></tr>
+    <tr><td>意图塔中间层系数</td><td class="num">0.180</td><td class="num">0.135</td><td class="num">0.080</td><td>系数小反而塔更细，实测塔宽 645 / 492 / 292</td></tr>
+    <tr><td>验算门槛</td><td class="num">0.18</td><td class="num">0.21</td><td class="num">0.24</td><td>越高越严谨，不过就重想</td></tr>
+    <tr><td>验算不过复想轮数</td><td class="num">0</td><td class="num">1</td><td class="num">2</td><td>纠偏再想的次数</td></tr>
+    <tr><td>输入读取量（词元）</td><td class="num">40</td><td class="num">56</td><td class="num">72</td><td>整句吃进长指令、多段粘贴</td></tr>
+    <tr><td>专业等级</td><td class="num">0</td><td class="num">1</td><td class="num">2</td><td>措辞与结构的专业度</td></tr>
+  </tbody>
+</table>
+
+<h3>档位气质写进了系统提示词（<code>@@PRO@@</code> 占位符已回填，无残留）</h3>
+<ul>
+  <li><strong>Lite</strong>：标准档，说人话、不端着，先给结论再给理由，篇幅利落。</li>
+  <li><strong>Pro</strong>：专业档，动手前先复述你的真实诉求，术语准确、结构清晰、给可执行细节，篇幅比标准档更完整。</li>
+  <li><strong>Ultra</strong>：旗舰档，像资深专家一样审题，先拆需求、再点明假设与边界，分点成体系地给方案与取舍理由，术语精确、不说废话。</li>
+</ul>
+
+<h2>三、同一句提问，三档真实对话实测</h2>
+<p>提问统一为「帮我设计一个能自动整理桌面文件的方案，要求稳定、省事。」。为保证结果不被抢显卡的进程污染，实测走 CPU 后端（无显卡争用）；GPU 后端的小方速度由验收套件单独测得，见第四节。</p>
+
+<table>
+  <thead>
+    <tr><th>档位</th><th>用户等待</th><th>其中「深度思考」</th><th>答案字符数</th><th>答案行数</th><th>后台训练</th><th>训练耗时（不占等待）</th><th>栅栏终态</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Lite</td><td class="num">124.79 s</td><td class="num">123.38 s</td><td class="num">5994</td><td class="num">80</td><td class="num">1 次 / 跳过 0</td><td class="num">21.87 s</td><td><span class="tag ok">已放行</span></td></tr>
+    <tr class="hi"><td>Pro</td><td class="num">170.55 s</td><td class="num">169.22 s</td><td class="num">6330</td><td class="num">80</td><td class="num">1 次 / 跳过 0</td><td class="num">20.67 s</td><td><span class="tag ok">已放行</span></td></tr>
+    <tr class="hi"><td>Ultra</td><td class="num">211.60 s</td><td class="num">210.23 s</td><td class="num">6179</td><td class="num">80</td><td class="num">1 次 / 跳过 0</td><td class="num">21.64 s</td><td><span class="tag ok">已放行</span></td></tr>
+  </tbody>
+</table>
+
+<p>逐档变深的直接证据（同一句提问的思考过程）：</p>
+<ul>
+  <li><strong>Lite</strong>：意图塔 4 层 2 头 1 遍，验算门槛 0.18，两次验算 cos = 0.731 / 0.493。</li>
+  <li><strong>Pro</strong>：意图塔 6 层 4 头 2 遍，验算门槛 0.21，两次验算 cos = 0.551 / 0.706。</li>
+  <li><strong>Ultra</strong>：意图塔 8 层 6 头 3 遍，验算门槛 0.24，两次验算 cos = 0.538 / 0.888。</li>
+</ul>
+
+<h2>四、t2 / t3 / t4 端到端验收：30 项用例全绿</h2>
+<table>
+  <thead><tr><th>验收段</th><th>覆盖内容</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr><td>A / A2 开机预热</td><td>预热线程收工、冷编译在后台付掉、栅栏放行、过栅栏零等待、首问前向耗时</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td>B 意图识别</td><td>「画个鹈鹕骑自行车，前面要有篮子」这类模糊说法命中，不再回「我叫 AI 小方」</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td>C 直出提速</td><td>首跑 <strong>3.01 s</strong>、次跑 <strong>3.06 s</strong>，后台训练 6.75 s 不占用户等待</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td>D 真流式打字机</td><td>算到哪打到哪，思考过程随算随显，10 项断言</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td>E / F 档位与后端</td><td>档位闸门、后端选择</td><td><span class="tag ok">通过</span></td></tr>
+    <tr><td>总计</td><td><code>用例 30 · 失败 0 · COVI1_LIVE_OK</code></td><td><span class="tag ok">通过</span></td></tr>
+  </tbody>
+</table>
+<p>同一句提问在 GPU 后端（无争用窗口内）的 Lite 实测：<strong>用户等待 16.21 s</strong>，其中深度思考 14.57 s，其余阶段均小于 0.01 s，训练已完全移出用户等待路径。</p>
+
+<h2>五、这次踩到并处理掉的问题</h2>
+
+<h3>1. 抢显卡会让小方启动卡死（已定位根因，给出规避办法）</h3>
+<p>当 <code>学习小说.py</code> 占满显卡时，小方启动会停住不走。用看门狗抓到的线程栈是唯一的、明确的：</p>
+<pre>File "xiaofang_covi1.py", line 3806 in _quantize      &lt;- float(_m) 等显卡同步
+File "xiaofang_covi1.py", line 3794 in __init__       &lt;- Qint
+File "xiaofang_covi1.py", line 3775 in _WQ
+File "xiaofang_covi1.py", line 4052 in __init__       &lt;- TransformerBlock
+File "xiaofang_covi1.py", line 4096 in __init__       &lt;- DeepThinkTransformer
+File "xiaofang_covi1.py", line 7645 in __init__       &lt;- XiaoFang</pre>
+<p>即：权重量化那一步要把显存上的标量搬回主机，显卡被别的进程占满时这一步会无限期排队。规避办法：录制或演示小方之前，先让 <code>学习小说.py</code> 收工（或关掉）再启动；本次三档实测即改走 CPU 后端避开争用，引擎构建 42 秒，对话全程正常。</p>
+
+<h3>2. 「后台训练没派出去」是误判（已澄清）</h3>
+<p>早先的测试脚本在后台训练还没收工时就去读状态，于是看到「累计 0 次 / 栅栏关闭」，一度像缺陷。加上「等它收工再读」之后，三档实测全部显示 <strong>后台训练 1 次、栅栏终态已放行</strong>，证实 v2.3 的后台训练单槽工作正常：训练不再占用用户等待时间，也不会把下一句挡死。</p>
+
+<h2>六、复核结论</h2>
+<ul>
+  <li><code>xiaofang_covi1.py</code> 语法自检（py_compile）通过（鹈鹕引擎已内联进主程序，不再有独立引擎文件）。</li>
+  <li>t2 真流式打字机与思考过程、t3 意图识别修复、t4 直出提速、t5 前台学习语料脚本、t6 Pro/Ultra 分裂、t7 整体提速与三档实测，全部闭环。</li>
+  <li>鹈鹕引擎已内联进主程序 <code>xiaofang_covi1.py</code>（项目根目录不再有独立鹈鹕引擎文件），样例不重样；启动预热与提速逻辑均在验收套件覆盖范围内。</li>
+</ul>
+
+<h2>七、复现命令</h2>
+<pre># 端到端验收套件（t2/t3/t4/t6，30 项用例）
+python verify_covi1_live.py
+
+# 三档结构分裂
+python verify_tiers.py
+
+# 三档真实对话（一次一档，输出实时落盘；PX 为临时脚本目录）
+python -u t7_run_one.py lite    # 另加环境变量 XF_TIER=pro / XF_FORCE_CPU=1 可换档、避开显卡争用</pre>
+
+<footer>
+  报告由实测数据生成，数据来源：<code>verify_covi1_live.py</code> 运行输出、<code>t7_lite.log</code> / <code>t7_pro.log</code> / <code>t7_ultra.log</code>、<code>verify_tiers.py</code> 运行输出。所有耗时均为本机实测，未做任何外推估算。
+</footer>
+
+</div>
+</body>
+</html>

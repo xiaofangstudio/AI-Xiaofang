@@ -229,6 +229,7 @@ def _install_package(package):
 
 def _ensure_dependencies():
     required = {"colorama": "colorama", "ddgs": "ddgs", "pyfiglet": "pyfiglet",
+                  "requests": "requests", "beautifulsoup4": "bs4",
                 "numpy": "numpy", "psutil": "psutil"}
     missing = []
     for imp_name, pip_name in required.items():
@@ -300,8 +301,9 @@ def _touch_live():
 
 
 def _typewrite(text, color=C_REPLY, delay=0.035, end="\n"):
-    # v1.4: 思考态捕获——输出先进 buf 由面板重绘, 不打字机撞屏; 答案阶段仍逐字打字。
-    if UI_ST["capture"]:
+    # v1.4: 思考实时打字机(live)时直接逐字打出; 否则(折叠/缓冲模式)先进 buf 由面板重绘。
+    # 答案阶段 capture=False 始终逐字打字。
+    if UI_ST["capture"] and not UI_ST.get("live"):
         with _PRINT_LOCK:
             s = re.sub(r"\s+", " ", str(text)).strip()
             if s:
@@ -321,8 +323,8 @@ def _typewrite(text, color=C_REPLY, delay=0.035, end="\n"):
 
 
 def _typewrite_lines(lines, color=C_DEEP, line_delay=THINK_LINE_DELAY):
-    # v1.4: 思考态捕获——按行进 buf, 由面板重绘; 非思考态仍逐行打字。
-    if UI_ST["capture"]:
+    # v1.4: 思考实时打字机(live)时逐行打出; 否则(折叠/缓冲模式)按行进 buf 由面板重绘。
+    if UI_ST["capture"] and not UI_ST.get("live"):
         with _PRINT_LOCK:
             for ln in lines:
                 s = re.sub(r"\s+", " ", str(ln)).strip()
@@ -410,7 +412,8 @@ UI_ST = {
     "in": 0, "out": 0,  # 实时 Token 显示值(从按下回车=0 随思考增; 真值在 meter)
     "layer": 0,         # 实时"正在思考第几层"
     "stage": "",        # 实时当前状态/阶段
-    "fold": True,       # True=面板折叠成一行状态条; False=展开思考与计算详情
+    "fold": False,      # v1.4: 默认展开思考与计算详情; True=折叠成一行状态条
+    "live": True,       # v1.4: 思考默认实时打字机显示(不先收进面板), False=退回缓冲面板
     "t0": 0.0,
     "last_tick": 0.0,
 }
@@ -427,6 +430,7 @@ def _ui_reset_turn():
     UI_ST["layer"] = 0
     UI_ST["stage"] = "解析中…"
     UI_ST["fold"] = False      # v1.4: 默认展开
+    UI_ST["live"] = True       # v1.4: 思考默认实时打字机显示
     UI_ST["t0"] = time.time()
     UI_ST["last_tick"] = time.time()
 
@@ -484,12 +488,15 @@ def _panel_render():
 def _status(msg):
     """阶段状态提示: 小方此刻"正在干什么"的实时灰字进度条."""
     if UI_ST["capture"]:
-        with _PRINT_LOCK:
-            s = re.sub(r"\s+", " ", str(msg)).strip()
-            if s and (not UI_ST["buf"] or UI_ST["buf"][-1] != s):
-                UI_ST["buf"].append(s)
-            UI_ST["stage"] = s
-        UI_ST["last_tick"] = time.time()
+        UI_ST["stage"] = msg
+        if not UI_ST.get("live"):            # 折叠/缓冲模式 → 进 buf 由面板显示
+            with _PRINT_LOCK:
+                s = re.sub(r"\s+", " ", str(msg)).strip()
+                if s and (not UI_ST["buf"] or UI_ST["buf"][-1] != s):
+                    UI_ST["buf"].append(s)
+            UI_ST["last_tick"] = time.time()
+        else:                                # 默认: 思考过程实时打字机显示
+            _typewrite("  ⟳ " + msg, C_HINT)
         return
     _typewrite_lines(["  · " + msg], C_HINT, line_delay=0.006)
 
@@ -3308,10 +3315,63 @@ class XiaoFang:
         q = q.strip(" :：")
         return q[:40] or (text.strip()[:40] or "AI")
 
+    def _baidu_search(self, query, max_results=5):
+        """v1.4: 百度搜索(国内稳定可用)。返回 [{title, body, href}, ...]，与 ddgs 格式兼容。"""
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return []
+        url = "https://www.baidu.com/s"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        try:
+            resp = requests.get(url, params={"wd": query, "rn": max_results * 2},
+                                headers=headers, timeout=8)
+            resp.encoding = "utf-8"
+        except Exception:
+            return []
+        soup = BeautifulSoup(resp.text, "lxml")
+        results = []
+        for c in soup.select("div.result, div.c-container, div[class*='result']"):
+            title_tag = c.select_one("h3 a, h3.title a, .t a")
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            href = title_tag.get("href", "")
+            body = ""
+            for sel in [".c-abstract", ".content-right_8Zs40", "span.content-right_8Zs40",
+                        ".c-span-last", "div[class*='abstract']", "div[class*='content-right']"]:
+                tag = c.select_one(sel)
+                if tag:
+                    body = tag.get_text(strip=True)
+                    break
+            if not body:
+                all_text = c.get_text(" ", strip=True)
+                body = all_text[len(title):].strip()[:200] if all_text else ""
+            if title and body:
+                results.append({"title": title, "body": body, "href": href})
+            if len(results) >= max_results:
+                break
+        return results
+
     def _fetch_web(self, query, max_results=5):
-        # v1.3 Alpha 卡死防呆: 整段网络放在 4s 守护线程硬超时里跑。
-        #   旧版直接同步挨个试 SEARCH_BACKENDS, 网一不通每个后端都能挂很久 → 用户等 5 分钟像死机。
+        # v1.4: 优先百度搜索(国内稳定)，百度失败再回退 ddgs 多后端(境外/有代理时可用)。
+        # v1.3 Alpha 卡死防呆: 整段网络放在守护线程硬超时里跑。
         def _go():
+            # ① 先试百度
+            try:
+                baidu_res = self._baidu_search(query, max_results=max_results)
+                if baidu_res:
+                    self.last_web_backend = "baidu"
+                    return baidu_res
+            except Exception:
+                pass
+            # ② 百度不行再试 ddgs 各后端
             results = []
             for bk in SEARCH_BACKENDS:
                 try:
@@ -3324,8 +3384,8 @@ class XiaoFang:
                 except Exception:
                     continue
             return results
-        # 不管后端多卡, 最多 4 秒就让主线程拿回结果(拿不到就 [] → reply 走离线兜底, 绝不卡死)
-        return _run_with_timeout(_go, timeout=4.0, default=[])
+        # 百度+解析需要更多时间，给 10 秒；拿不到就 [] → reply 走离线兜底，绝不卡死
+        return _run_with_timeout(_go, timeout=10.0, default=[])
 
     def search_and_integrate(self, query, emo):
         # v0.4Search: 优先复用思考内已检索的结果, 否则立即联网; RAG 式整合
@@ -3922,6 +3982,10 @@ class XiaoFang:
         self.think(text, emo, intent, kb_hits)
         UI_ST["capture"] = False      # v1.4: 思考/计算已捕获完, 之后答案为真实打字机输出
         UI_ST["layer"] = MODEL_LAYERS
+        if UI_ST.get("live"):         # v1.4: 思考实时打字结束后, 打一条最终状态行(状态面板定点)
+            sys.stdout.write(C_HINT + "  ⟳ " + _ui_status_text() + C_RESET + "\n")
+            sys.stdout.flush()
+            UI_ST["last_tick"] = time.time()
         # —— 思考完才 "再检测关键词" ——
         light_chat = intent["top"] in ("greet", "bye", "thanks", "joke", "help",
                                        "time", "date", "smalltalk") or len(text) <= 6
@@ -4015,8 +4079,8 @@ class XiaoFang:
         t0 = time.time()
         while not got.get("done"):
             now = time.time()
-            # —— v1.4: 思考/计算期 → 状态分段面板单线程原地重绘(Token/层数/阶段/盲文旋转) ——
-            if UI_ST["capture"]:
+            # —— v1.4: 思考期 → 折叠/缓冲模式下才原地重绘面板; 默认(live)思考直接打字, 不抢屏 ——
+            if UI_ST["capture"] and not UI_ST.get("live"):
                 if UI_ST["layer"] < MODEL_LAYERS and now - t0 > 0.15:
                     UI_ST["layer"] += 1
                 _panel_render()
