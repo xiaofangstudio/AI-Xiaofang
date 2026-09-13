@@ -5138,6 +5138,7 @@ class _FrozenCache:
             self._tmp = self._path + ".tmp"
             if os.path.isfile(self._path) and self._open_load():
                 self.mode, self.loading = "load", True
+                self._prune_old()            # v3.2: 每次暖启动顺手体检, 旧缓存/半截 tmp 不再堆积
                 return "load"
         except Exception:
             self._close()
@@ -5272,9 +5273,66 @@ class _FrozenCache:
             self.saved_bytes = self._payload0 + self._big_bytes
             self._close()
             os.replace(self._tmp, self._path)    # 原子改名: 中途断电也不会留下半截缓存
+            self._prune_old()                    # v3.2: 顺手清掉同档位"旧词表"的废弃缓存
         except Exception:
             self._abort_save()
         self.mode, self.loading = "off", False
+
+    def _prune_old(self):
+        """v3.2: 体重清理 —— 每次启动(暖启动/落盘成功)都顺手做一次, 缓存永不成堆。
+
+        实测背景: 这类文件会悄悄堆到几十 GB —— 本机一次就攒了 14 个 2.3GB 的
+        `fw_v1_*.bin`(共 32.7GB), 打开文件夹能把人看懵。根因是两个:
+
+          ① 废弃旧缓存: 签名里带 V(词表大小), 而词表 = 常用词 ∪ 知识库标题/别名
+             ∪ 跨会话自学记忆。只要加过一条知识、或聊出过新生词, 词表就变 →
+             签名就变 → 另开一个 2.3GB 新文件, 旧的再也读不回来却一直躺在盘上。
+          ② 半截垃圾: 冷编译(1~2 分钟)被 Ctrl+C / 断电打断, 会留下 `.bin.tmp`
+             —— 每个也是 2.3GB 级别的体积。
+
+        清理范围(极其保守, 绝不误伤):
+          · `.bin.tmp` 一律删 —— 它是"没写完的缓存", 天然是垃圾。(Windows 上
+            另一个进程正在写的文件删不掉, os.remove 会抛错被吞, 自动受保护)
+          · `.bin` 只删"签名里仅 V 段不同"的同档位兄弟; 其它档位(Lite/Pro/Ultra
+            的 d_model·层数·头数都不同)、其它 h(有卡/无卡)一个都不碰。
+        全程 try/except 吞掉一切异常, 最坏情况只是没清掉, 绝不影响启动。
+        """
+        try:
+            _dir = self._cache_dir()
+            try:
+                _names = os.listdir(_dir)
+            except Exception:
+                return
+            # ① 半截 .tmp 一律清
+            for fn in _names:
+                if fn.endswith(".bin.tmp"):
+                    try:
+                        os.remove(os.path.join(_dir, fn))
+                    except Exception:
+                        pass
+            # ② 废弃旧缓存: 只有 V 段不同的同档位兄弟
+            me = os.path.basename(self._path or "")
+            m = re.match(r"^fw_v(\d+)_(.*)_V(\d+)_s(\d+)_h(\d+)\.bin$", me)
+            if not m:
+                return
+            mine = m.group(2)                    # 本档位签名(不含 V)
+            head = "fw_v%s_" % m.group(1)
+            tail = "_s%s_h%s.bin" % (m.group(4), m.group(5))
+            pat = re.compile(r"^fw_v\d+_.+_V\d+_s\d+_h\d+\.bin$")
+            for fn in _names:
+                if fn == me or not fn.startswith(head) or not fn.endswith(tail):
+                    continue
+                if not pat.match(fn):
+                    continue
+                mid = fn[len(head):len(fn) - len(tail)]
+                if mid.rsplit("_V", 1)[0] != mine:   # 不同档位 → 不是我的旧缓存, 别动
+                    continue
+                try:
+                    os.remove(os.path.join(_dir, fn))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _abort_save(self):
         self._close()
