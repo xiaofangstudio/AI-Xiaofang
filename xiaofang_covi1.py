@@ -4962,8 +4962,11 @@ NEST_TOK = TIER_NEST_TOK       # t6: 每层嵌套思考让 Transformer 自己想
 #     这就是"Pro/Ultra 思考更深"最直接的来源(CPU 速度与思考深度的平衡点随档位上移)。
 #     仍受速度档位(_flash_nest_tok)与下方 3B/4B 收窄闸门约束, 下限保 3 个词元, 不会想成空白。
 
-# v1.8 Alpha: 3B/4B 在纯 CPU 上的"稳跑"闸门 —— 模型越大, 训练切口越窄、单步序列越短、嵌套思考步数越省,
-#   确保只靠 CPU 也不溢出内存、不把一轮对话拖到几十秒。默认 2.4B 档时这三项维持原值不变。
+# v1.8 Alpha: 3B/4B 在纯 CPU 上的"稳跑"闸门 —— 只在显式放开尺度上限时才会进入。
+#   注意: 默认 Lite/Pro/Ultra(2.40B/2.48B/2.50B)全部 < 3B, 本块平时是【待命】、绝不误触发。
+#   只有当用户显式设 XIAOFANG_SCALE=3b/4b(或 xiaofang_settings.MODEL_SCALE=3b/4b)且机器内存真够,
+#   尺度才会升到 4096/4608 档(→MODEL_PARAMS ≥ 3B, 见下方 _MODEL_TIERS 前两档), 本块才真正生效:
+#   模型越大, 训练切口越窄、单步序列越短、嵌套思考步数越省 —— 只靠 CPU 也不溢出、不拖到几十秒。
 if MODEL_PARAMS >= 3_000_000_000:
     TRAIN_LAST_BLOCKS = 1     # 3B/4B: 只训最后 1 层 FFN 的低秩切口, fp32 主权重不膨胀
     TRAIN_MAX_SEQ = 96        # v3.1 3B/4B: 单步训练序列 32→96, 长句也进得来(瞬时内存由 _mem_guard 兜底)
@@ -9279,6 +9282,15 @@ class LearnerMemory:
     MAX_KNOW = 1400           # v1.8 Alpha: 释义上限 800→1400(只存 40 字摘要, 渣机无压力)
     MAX_FACTS = 240           # v1.8 Alpha: 长期事实(用户是谁/在意什么)上限
     _NOISE = set("的了是在我不有和这那与就也都而或及之很都太更最也吧吗呢啊哦呀啦吧么嘛嗯哈嘿嘻嘻啦啦哦耶哇哎")
+    # v2.8: 历史迁移(migrate)一次性清洗用的黑名单 —— 脏词 / 当年正则挡不住的碎词。
+    #   只用于"旧记忆首次清洗", 不放进收集新词的门槛(免得把以后真学到的英文也误杀)。
+    _WORD_BAN = frozenset((
+        "shit", "fuck", "fucking", "fucked", "bitch", "bitchy", "dick", "pussy",
+        "ass", "damn", "crap", "bastard", "sex", "porn",
+        "傻逼", "傻b", "傻呗", "sb", "操你", "日你",
+        # 历史里逃过 _looks_like_nonsense 的脸滚键盘 / 无意义碎词(元音够但拼不出), 一次性清掉:
+        "asdjkhqwe", "vomissement", "sanglots", "cries", "enf",
+    ))
 
     def __init__(self, tok=None):
         self.tok = tok
@@ -9335,6 +9347,7 @@ class LearnerMemory:
             self._seq = data.get("seq", 0) or 0
             # v1.8 Alpha: 长期事实记忆 —— 用户是谁 / 在意什么, 跨会话不忘
             fa = data.get("facts", {})
+            pruned = False
             if isinstance(fa, dict):
                 for key, v in fa.items():
                     if not isinstance(key, str) or not key:
@@ -9343,9 +9356,17 @@ class LearnerMemory:
                     val = str(e.get("v", ""))
                     if not val:
                         continue
+                    # v2.8: 上车时顺手踢掉"施动词残留"的旧事实 —— 曾因身份正则漏网,
+                    #   把"帮我做个计划表"误记成 身份:个整理桌面的计划表, n 还叠到 15。
+                    #   值以 _FACT_STOP 开头(如"个""一下")= 当年正则吞进去的残渣 → 不再载入。
+                    if val.startswith(self._FACT_STOP):
+                        pruned = True
+                        continue
                     self.facts[key] = {"k": str(e.get("k", "")), "v": val,
                                        "n": int(e.get("n", 1)), "last": int(e.get("last", 0))}
-            if migrated:                                  # 迁移成功 → 立即写入新版文件
+            # v2.8: 仅首次(旧记忆迁移进来时)做一次生词污染清洗; 以后 purge_done 置真不再扫。
+            purged = self._purge_legacy_words() if not data.get("purge_done") else 0
+            if migrated or pruned or purged:              # 迁移成功 / 清了污染 → 立即落盘新版
                 self._dirty = True
                 self._save()
         except Exception:
@@ -9355,7 +9376,8 @@ class LearnerMemory:
         p = self._mem_path()
         try:
             data = {"version": VERSION, "seq": self._seq,
-                    "words": self.words, "know": self.know, "facts": self.facts}
+                    "words": self.words, "know": self.know, "facts": self.facts,
+                    "purge_done": True}   # v2.8: 首次污染清洗做完即定格, 之后不再重扫
             tmp = p + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
@@ -9394,6 +9416,37 @@ class LearnerMemory:
         if re.fullmatch(r"[\u4e00-\u9fff]+", w):
             return 2 <= len(w) <= 12 and not all(c in self._NOISE for c in w)
         return False
+
+    def _word_sane(self, w):
+        """v2.8: 旧库一次性清洗的"合理词"判定 —— 比 capable() 更严, 专治历史污染。"""
+        if not self.capable(w):
+            return False
+        if not re.fullmatch(r"[A-Za-z]+", w):        # 中文/其它: 只查黑名单
+            return w not in self._WORD_BAN
+        low = w.lower()
+        if low in self._WORD_BAN:
+            return False
+        v = sum(1 for c in low if c in _VOWELS)
+        if v < 1 or v / float(len(low)) < 0.20:      # 没元音 / 元音稀薄: 拼不出来
+            return False
+        if re.search(r"[bcdfghjklmnpqrstvwxz]{5,}", low):   # ≥5 连辅音: 脸滚键盘
+            return False
+        return True
+
+    def _purge_legacy_words(self):
+        """v2.8: 一次性清掉历史版本迁移带进来的污染生词, 只跑一次(由 purge_done 定格)。
+
+        背景: 老版词表里混进 shit/傻逼/asdjkhqwe/vomissement/sanglots/cries/enf 这类
+        后来才学会挡的东西, 随记忆迁移直接搬进新版。停在词表里不致命(安全闸在
+        _ban_scan, 不在词表), 但脏词会抬走排序、污染分词; 而且旧的不清, 新的还会
+        接着往 words 里补 —— 一次性重筛最解气。清洗是幂等的, 再跑也不会多删。
+        """
+        if not self.words:
+            return 0
+        drop = [w for w in self.words if not self._word_sane(w)]
+        for w in drop:
+            self.words.pop(w, None)
+        return len(drop)
 
     def note_word(self, w):
         """记一次生词出现: 已学仅累加(去重), 新词入表. 返回是否新学."""
@@ -9436,15 +9489,19 @@ class LearnerMemory:
     #   旧版只学"生词 + 词条释义", 记不住"用户是谁、在意什么";
     #   这里从用户话里抽短事实(不存原文), 有界、去重、可跨会话回忆。
     _FACT_PATS = (
-        ("称呼", re.compile(r"我(?:的名字)?(?:叫|是)\s*([\u4e00-\u9fffA-Za-z0-9_]{2,12})")),
-        ("喜好", re.compile(r"我(?:最|很|超|特别)?(?:喜欢|爱|偏爱|讨厌|不喜欢)\s*([^\n。，,；;！!？?]{2,16})")),
-        ("所在", re.compile(r"我(?:现在)?(?:住在|在)\s*([\u4e00-\u9fff]{2,10})(?:工作|上班|上学|读书|生活|住)")),
-        ("身份", re.compile(r"我(?:是一名|是个|是位|做)\s*([^\n。，,；;！!？?]{2,16})")),
-        ("目标", re.compile(r"我(?:想要|打算|计划|准备)\s*([^\n。，,；;！!？?]{2,16})")),
+        # v2.8: 每个"我"前加定宽后顾排除"施动词" —— 帮/给/替。
+        #   "帮我做个计划表" 里 帮-我-做 本是祈使, 老正则会从"我做"起把整段吞成"身份";
+        #   现在"我"前是"帮" → 后顾排除, 整条不再命中, 祈使句不再污染记忆。
+        ("称呼", re.compile(r"(?<!帮)(?<!给)(?<!替)我(?:的名字)?(?:叫|是)\s*([\u4e00-\u9fffA-Za-z0-9_]{2,12})")),
+        ("喜好", re.compile(r"(?<!帮)(?<!给)(?<!替)我(?:最|很|超|特别)?(?:喜欢|爱|偏爱|讨厌|不喜欢)\s*([^\n。，,；;！!？?]{2,16})")),
+        ("所在", re.compile(r"(?<!帮)(?<!给)(?<!替)我(?:现在)?(?:住在|在)\s*([\u4e00-\u9fff]{2,10})(?:工作|上班|上学|读书|生活|住)")),
+        # v2.8: "做"从身份里摘掉 —— "我是做X的"才是身份,"我做X"是动作。只留 是名/是位/是个。
+        ("身份", re.compile(r"(?<!帮)(?<!给)(?<!替)我(?:是一名|是个|是位)\s*([^\n。，,；;！!？?]{2,16})")),
+        ("目标", re.compile(r"(?<!帮)(?<!给)(?<!替)我(?:想要|打算|计划|准备)\s*([^\n。，,；;！!？?]{2,16})")),
     )
     _FACT_STOP = ("不是", "在问", "想说", "觉得", "认为", "看看", "听", "说", "问",
                   "想不", "不懂", "不会", "没", "不", "要问", "先", "再", "还",
-                  "也", "是来", "就是", "只是", "已经")
+                  "也", "是来", "就是", "只是", "已经", "个", "一下")
 
     def _evict_facts(self):
         if len(self.facts) <= self.MAX_FACTS:
@@ -14027,6 +14084,10 @@ class XiaoFang:
             _fb = self.selfmem.facts_brief()
             if _fb:
                 print(C_HINT + "  记得的你: " + _fb + C_RESET)
+            # v2.8: 库正文超长等"学到了但有降级"的提示, 不藏起来 —— 让 /memory 看得见
+            _ln = getattr(self, "_last_learn_note", "")
+            if _ln:
+                print(C_HINT + "  ⚠ 学习提示: " + _ln + C_RESET)
             print(C_HINT + "  提示: 记忆有上限, 学到新词会按使用频率淘汰久不用的旧词(LRU); /forget 可整库清空。" + C_RESET)
             return "ok"
         elif c == "/forget":
@@ -14428,6 +14489,11 @@ class XiaoFang:
         b = str(best_e.get("b", "") or "")
         if 0 < len(b) <= 600:
             parts.append(b)
+        elif len(b) > 600:
+            # v2.8: 超长库正文不是"静默丢掉" —— 留一条可见提示, /memory 能看见:
+            #   否则将来塞进长条目也不学、还没任何信号, 像掉进黑洞。
+            self._last_learn_note = ("库正文 {} 字 > 600 上限, 该条长正文未全量进监督目标, 仍按『标题+答案』学".
+                                     format(len(b)))
         return "。".join(x.strip() for x in parts if x and x.strip()).strip()
 
     def _kb_gap_words(self, text, hits):
@@ -14529,6 +14595,7 @@ class XiaoFang:
         self._last_learn_skip = ""
         self._last_learn_src = ""
         self._last_learn_cos = 0.0
+        self._last_learn_note = ""     # v2.8: 库正文超长等"学到了但有降级"的提示, /memory 可见
         # ── v3.1 学习闸门 ──
         try:
             _ok, _hits, _cos = self._learn_gate(text)

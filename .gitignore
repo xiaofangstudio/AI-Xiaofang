@@ -4,3 +4,10 @@ __pycache__/
 
 # 首次启动自检留下的环境记号（本机生成，不该进仓库）
 .xf_env_ok
+
+# IDE 工程文件
+.idea/
+.vscode/
+
+# 运行期权重缓存（单个 2.4GB，可自动重建，绝不入库；正式权重走 xiaofang_train_covi1_*.npz）
+权重缓存/
