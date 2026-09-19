@@ -93,7 +93,7 @@ echo    found  : %PYEXE%
 rem ---- 4) libraries: pip install everything the engine imports -------
 :SETUP_LIBS
 echo.
-echo    Preparing libraries - numpy, psutil, requests, pyfiglet ...
+echo    Preparing libraries - numpy, psutil, requests, bs4, flask ...
 echo.
 "%PYEXE%" %PYVER% "xiaofang_launcher.py" --bootstrap
 if errorlevel 1 goto BOOTSTRAP_FAIL

@@ -11,10 +11,10 @@
 #   off   = 不思考：不做深度思考，直接生成回答（最快）
 #   think = 单轮思考：每次都先深度思考再回答（默认，最稳）
 #   multi = 多轮思考：小方边答边想、边想边答（类 DeepSeek V4 Pro 风格）
-THINK_MODE = 'think'
+THINK_MODE = 'multi'
 
 # 多轮思考的轮数（THINK_MODE=multi 时生效，越大想得越细但越慢）
-THINK_TURNS = 3
+THINK_TURNS = 4
 
 # 情绪敏感度（放大/减弱情绪权重的系数，1.0=标准，越大对小方情绪越敏感）
 EMOTION_SENSITIVITY = 1.2

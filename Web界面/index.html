@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>小方</title>
+<link rel="icon" href="assets/xf.jpg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <!-- ══════════ 侧栏 ══════════ -->
+  <aside class="side" id="side">
+    <div class="brand">
+      <img class="brand-face" src="assets/xf.jpg" alt="小方">
+      <div class="brand-txt">
+        <b>小方</b>
+        <span id="brandSub">本地机器 · 不上云</span>
+      </div>
+    </div>
+
+    <button class="new-chat" id="newChat">
+      <svg viewBox="0 0 24 24" class="ic"><path d="M12 5v14M5 12h14"/></svg>
+      <span>新对话</span>
+      <em class="kbd">Ctrl K</em>
+    </button>
+
+    <div class="side-label">
+      <span>历史对话</span>
+      <i id="convCount">0</i>
+    </div>
+    <div class="conv-list" id="convList"></div>
+
+    <div class="side-foot">
+      <div class="conn" id="conn">
+        <i class="dot"></i><span id="connTxt">正在连引擎…</span>
+      </div>
+      <button class="quit" id="cfgBtn" title="设置：思考 / 情绪 / 速度这些开关">
+        <svg viewBox="0 0 24 24" class="ic"><circle cx="12" cy="12" r="3.1"/><path d="M19.4 13.5a7.6 7.6 0 0 0 0-3l1.7-1.3-1.9-3.3-2 .8a7.6 7.6 0 0 0-2.6-1.5L14.3 3h-3.8l-.3 2.2a7.6 7.6 0 0 0-2.6 1.5l-2-.8-1.9 3.3L5.4 10.5a7.6 7.6 0 0 0 0 3l-1.7 1.3 1.9 3.3 2-.8a7.6 7.6 0 0 0 2.6 1.5l.3 2.2h3.8l.3-2.2a7.6 7.6 0 0 0 2.6-1.5l2 .8 1.9-3.3z"/></svg>
+      </button>
+      <button class="quit" id="skinBtn" title="个性化：换一张背景图">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M4 7h8M18 7h2M4 17h4M14 17h6"/><circle cx="15" cy="7" r="2.3"/><circle cx="11" cy="17" r="2.3"/></svg>
+      </button>
+      <button class="quit" id="quitBtn" title="退出，并关掉本地那个推理进程">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ══════════ 主区 ══════════ -->
+  <main class="stage">
+
+    <!-- 背景层：两片叠着放，换图时一片淡进、一片淡出，全程只有 opacity -->
+    <div class="bg-wrap" id="bgWrap" aria-hidden="true">
+      <div class="bg-img" id="bgImgA"></div>
+      <div class="bg-img" id="bgImgB"></div>
+      <div class="bg-scrim" id="bgScrim"></div>
+    </div>
+
+    <header class="topbar">
+      <button class="icon-btn" id="sideToggle" title="收起 / 展开侧栏">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+
+      <!-- 机器铭牌：点一下能看到这台机器到底在跑什么 -->
+      <button class="plate" id="plate" title="点开看这台机器在跑什么">
+        <span class="plate-seal" id="plateSeal">正式版</span>
+        <span class="plate-txt">
+          <b id="curModel">Covi1 Lite</b>
+          <em id="curModelSub">正在认路…</em>
+        </span>
+        <span class="plate-sn" id="plateSn">SN —</span>
+      </button>
+
+      <div class="top-right">
+        <button class="icon-btn" id="artBtn" title="产物：画过的图、写过的代码都在这">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M3.5 7A2.5 2.5 0 0 1 6 4.5h4.2l2 2.6H18A2.5 2.5 0 0 1 20.5 9.6v7.9A2.5 2.5 0 0 1 18 20H6a2.5 2.5 0 0 1-2.5-2.5z"/></svg>
+        </button>
+        <div class="state-pill" id="statePill"><i class="dot"></i><span id="stateTxt">准备中</span></div>
+      </div>
+    </header>
+
+    <section class="stream" id="stream">
+      <!-- 首次打开、一句话都还没有时：正脸小方在背后浮着 -->
+      <div class="hello" id="hello">
+        <!-- 居中单独交给这一层来做，视差位移作用在里面那层，互不干扰 -->
+        <div class="ghost-stage" aria-hidden="true">
+          <div class="ghost-wrap" id="ghostWrap">
+            <img class="hello-ghost" id="helloGhost" src="assets/xf.jpg" alt="">
+            <span class="ghost-aura"></span>
+          </div>
+        </div>
+
+        <div class="hello-card" id="helloCard">
+          <!-- v3.8: 启动彩蛋 —— 刚打开先"0 1 0 2 0 3 0 4"八个数字在卡片上方逐位冒出来,
+              像一段开机信号。冒完那一瞬才往下走进标语打字, 老用户一眼就认得这个味。 -->
+          <div class="v-sign" id="vSign" aria-hidden="true">
+            <span>0</span><span>1</span><span>0</span><span>2</span>
+            <span>0</span><span>3</span><span>0</span><span>4</span>
+          </div>
+          <div class="h-eyebrow">LOCAL · OFFLINE · 只属于你</div>
+          <!-- 首屏主角就是这句每次现敲的随机标语，原来那个大字「小方」已经撤了 -->
+          <p class="h-lead"><span id="helloLead"></span><i class="lead-caret" id="leadCaret"></i></p>
+          <p class="h-sub">写代码、理思路、读文件，都能接。<br>想不到说什么，下面几个按钮随便点。</p>
+          <div class="chips" id="chips">
+            <button class="chip" data-t="你好，先自我介绍一下吧"><i>0 1</i>先自我介绍一下</button>
+            <button class="chip" data-t="帮我写一段 Python，读取 CSV 并统计每列的空值"><i>0 2</i>写个脚本数空值</button>
+            <button class="chip" data-t="用三句话讲清楚什么是注意力机制"><i>0 3</i>注意力机制，三句话</button>
+            <button class="chip" data-t="陪我随便聊聊，今天有点累"><i>0 4</i>随便聊聊</button>
+          </div>
+          <div class="h-hint"><b>Enter</b> 发送 · 我会一个字一个字地回你</div>
+        </div>
+      </div>
+
+      <div class="msgs" id="msgs"></div>
+      <div class="stream-pad"></div>
+    </section>
+
+    <!-- ══════════ 输入区 ══════════ -->
+    <footer class="dock">
+      <div class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="" autocomplete="off" spellcheck="false"></textarea>
+
+        <div class="composer-bar">
+          <button class="model-btn" id="modelBtn">
+            <img class="mb-face" src="assets/xf.webp" alt="">
+            <span class="mb-name" id="mbName">Covi1 Lite</span>
+            <i class="mb-dot" id="mbDot"></i>
+            <svg viewBox="0 0 24 24" class="ic caret"><path d="M6 15l6-6 6 6"/></svg>
+          </button>
+
+          <div class="think" id="think" title="思考强度 · 拖动 / 点档位 / 方向键">
+            <span class="think-lab">思考</span>
+            <div class="think-stack">
+              <div class="think-marks" id="thinkMarks">
+                <span data-mode="off">不思考</span>
+                <span data-mode="think">思考</span>
+                <span data-mode="multi">多轮</span>
+              </div>
+              <div class="think-track" id="thinkTrack" tabindex="0" role="slider"
+                   aria-label="思考强度" aria-valuemin="0" aria-valuemax="2" aria-valuenow="1">
+                <span class="think-glow" aria-hidden="true"></span>
+                <span class="think-dots" aria-hidden="true">
+                  <i class="td-a"></i><i class="td-b"></i><i class="td-c"></i><i class="td-flow"></i>
+                </span>
+                <span class="think-trail" id="thinkTrail" aria-hidden="true"></span>
+                <span class="think-notches" aria-hidden="true"><i></i><i></i><i></i></span>
+                <div class="think-knob" id="thinkKnob"></div>
+                <button class="think-seg" data-mode="off" type="button" tabindex="-1" aria-hidden="true">不思考</button>
+                <button class="think-seg" data-mode="think" type="button" tabindex="-1" aria-hidden="true">思考</button>
+                <button class="think-seg" data-mode="multi" type="button" tabindex="-1" aria-hidden="true">多轮</button>
+              </div>
+            </div>
+            <div class="turns" id="turns" title="多轮思考的轮数">
+              <button id="turnsMinus" type="button">−</button>
+              <b id="turnsNum">3</b>
+              <button id="turnsPlus" type="button">＋</button>
+            </div>
+          </div>
+
+          <div class="bar-spacer"></div>
+
+          <button class="stop-btn" id="stopBtn" hidden>
+            <svg viewBox="0 0 24 24" class="ic"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+            <span>打断</span>
+          </button>
+          <button class="send" id="sendBtn" title="发送 (Enter)">
+            <svg viewBox="0 0 24 24" class="ic"><path d="M12 20V5M6 11l6-6 6 6"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="dock-hint" id="dockHint">模型跑在一个最小化的黑色命令窗口里，那是我本地的推理进程，别关它。</div>
+    </footer>
+  </main>
+
+  <!-- ══════════ 右侧：产物栏 ══════════
+       它跟左边那栏是"有你没我"：这栏一开，左边自动收；左边一拉开，这栏自动收。
+       里面全是只读的 —— 列的是「产物」文件夹里已经落盘的东西。 -->
+  <aside class="art" id="art" hidden>
+    <div class="art-head">
+      <div class="art-tt">
+        <b>产物</b>
+        <em id="artDir">正在找…</em>
+      </div>
+      <div class="art-acts">
+        <button class="icon-btn sm" id="artRefresh" type="button" title="重新扫一遍">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6"/></svg>
+        </button>
+        <button class="icon-btn sm" id="artClose" type="button" title="收起产物栏">
+          <svg viewBox="0 0 24 24" class="ic"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="art-list" id="artList"></div>
+
+    <div class="art-view" id="artView">
+      <div class="art-empty">
+        左边点一个文件，这里就能看。<br>
+        <span>图直接显示，代码和文本原样读给你。</span>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ══════════ 模型上拉菜单（三级） ══════════ -->
+<div class="pop" id="pop" hidden>
+  <div class="pop-head">
+    <span>换一个跑</span>
+    <em>带箭头的还有下一级；停一下会告诉你能不能秒开</em>
+  </div>
+  <div class="pop-body">
+    <div class="pop-col" id="popGroups"></div>
+    <div class="pop-col" id="popItems"></div>
+    <div class="pop-col" id="popKids"></div>
+  </div>
+</div>
+
+<!-- 悬停弹出的模型状态小卡 -->
+<div class="tip" id="tip" hidden></div>
+
+<!-- 机器铭牌展开的信息卡 -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-card" id="sheetCard"></div>
+</div>
+
+<!-- ══════════ 加载遮罩（切模型 / 冷启动时） ══════════ -->
+<div class="overlay" id="overlay" hidden>
+  <div class="ov-card">
+    <div class="ov-face-wrap">
+      <img class="ov-face" src="assets/xf.jpg" alt="小方">
+      <div class="ov-ring"><svg viewBox="0 0 120 120"><circle class="rg" cx="60" cy="60" r="54"/><circle class="rv" id="ovArc" cx="60" cy="60" r="54"/></svg></div>
+    </div>
+    <h2 id="ovTitle">正在把模型搬进内存…</h2>
+    <p id="ovSub">第一次打开这一档会慢一点，之后就秒开了。</p>
+    <div class="bar"><div class="bar-fill" id="ovBar"></div></div>
+    <div class="ov-log" id="ovLog"></div>
+  </div>
+</div>
+
+<!-- ══════════ 连不上时的兜底页 ══════════ -->
+<div class="boot" id="boot" hidden>
+  <div class="boot-card">
+    <img class="boot-face" src="assets/xf.jpg" alt="小方">
+    <h2 id="bootTitle">正在唤醒小方…</h2>
+    <p id="bootSub">本地那个推理进程还在启动，稍等一下。</p>
+    <div class="boot-url" id="bootUrl" hidden></div>
+    <div class="boot-acts">
+      <button class="boot-btn" id="bootRetry">再试一次</button>
+    </div>
+    <div class="boot-tips" id="bootTips"></div>
+  </div>
+</div>
+
+<!-- ══════════ 个性化：背景图面板 ══════════ -->
+<div class="sk" id="skin" hidden>
+  <div class="sk-card" id="skinCard">
+    <h3>个性化</h3>
+    <div class="sk-sub">背景图 · 只从本机那个「背景图」文件夹里取，不出网</div>
+
+    <div class="sk-bar">
+      <button class="sk-btn" id="bgRefresh" type="button">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6"/></svg>
+        <span>刷新</span>
+      </button>
+      <button class="sk-btn" id="bgDefault" type="button">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M4 4h16v16H4zM4 10h16M10 10v10"/></svg>
+        <span>恢复默认</span>
+      </button>
+      <span class="sk-dir" id="bgDir" title="背景图文件夹">背景图</span>
+    </div>
+
+    <div class="sk-drop" id="bgDrop" role="button" tabindex="0" aria-label="拖入或选择背景图">
+      <input type="file" id="bgFile" accept="image/png,image/jpeg,image/webp" multiple hidden>
+      <span class="sk-drop-ic">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M12 16V4M7 9l5-5 5 5M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      </span>
+      <b>把图拖进来</b>
+      <em>或点这里挑一张 · PNG / JPG / WEBP</em>
+    </div>
+
+    <div class="sk-sec">
+      <h5><span>文件夹里这些</span><i id="bgCount">0</i></h5>
+      <div class="sk-grid" id="bgGrid"></div>
+      <div class="sk-empty" id="bgEmpty" hidden></div>
+    </div>
+
+    <button class="sk-close" id="skinClose" type="button">收起</button>
+  </div>
+</div>
+
+<!-- ══════════ 设置：和命令行里敲 setting 是同一批开关、同一个文件 ══════════ -->
+<div class="sk" id="cfg" hidden>
+  <div class="sk-card cf-card" id="cfgCard">
+    <h3>设置</h3>
+    <div class="sk-sub">改一下就生效，同时写进本机配置 · 跟命令行里敲 <b>setting</b> 是同一套开关</div>
+
+    <div class="cf-cur" id="cfCur"></div>
+
+    <div class="cf-sec">
+      <h5><span>怎么想</span><i>决定快慢和深度</i></h5>
+
+      <div class="cf-row">
+        <div class="cf-lab"><b>思考模式</b><em>不思考最快 · 多轮边答边想最细</em></div>
+        <div class="cf-seg" id="cfMode" role="radiogroup" aria-label="思考模式">
+          <button type="button" data-v="off">不思考</button>
+          <button type="button" data-v="think">单轮思考</button>
+          <button type="button" data-v="multi">多轮边答边想</button>
+        </div>
+      </div>
+
+      <div class="cf-row">
+        <div class="cf-lab"><b>多轮轮数</b><em>1 ~ 8 轮，越大挖得越细</em></div>
+        <div class="cf-slide" id="cfTurns" data-key="THINK_TURNS"
+             data-min="1" data-max="8" data-step="1" data-mode="int"></div>
+      </div>
+    </div>
+
+    <div class="cf-sec">
+      <h5><span>怎么说</span><i>决定语气和手速</i></h5>
+
+      <div class="cf-row">
+        <div class="cf-lab"><b>情绪敏感度</b><em>越大越共情，越小越冷静</em></div>
+        <div class="cf-slide" id="cfEmo" data-key="EMOTION_SENSITIVITY"
+             data-min="0" data-max="3" data-step="0.1" data-mode="float"></div>
+      </div>
+
+      <div class="cf-row">
+        <div class="cf-lab"><b>活泼度</b><em>越大 emoji 和语气越丰富</em></div>
+        <div class="cf-slide" id="cfEnergy" data-key="ENERGY"
+             data-min="0" data-max="2" data-step="0.1" data-mode="float"></div>
+      </div>
+
+      <div class="cf-row">
+        <div class="cf-lab"><b>速度档位</b><em>只压显示节奏，不动模型，正确率不变</em></div>
+        <div class="cf-seg cf-seg4" id="cfSpeed" role="radiogroup" aria-label="速度档位">
+          <button type="button" data-v="0">原速</button>
+          <button type="button" data-v="1">轻快</button>
+          <button type="button" data-v="2">Flash</button>
+          <button type="button" data-v="3">极速</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="cf-sec">
+      <h5><span>细节</span><i>三个开关</i></h5>
+
+      <button class="cf-sw" id="cfPunct" type="button" role="switch" aria-checked="true">
+        <span class="cf-sw-tx"><b>标点 / emoji 情绪</b><em>把 ！！？？😭 也算进情绪信号</em></span>
+        <span class="cf-sw-tk" aria-hidden="true"><i></i></span>
+      </button>
+
+      <button class="cf-sw" id="cfDeep" type="button" role="switch" aria-checked="true">
+        <span class="cf-sw-tx"><b>深度思考打字机</b><em>思考过程逐行打出来，看得见它在想</em></span>
+        <span class="cf-sw-tk" aria-hidden="true"><i></i></span>
+      </button>
+
+      <button class="cf-sw" id="cfNet" type="button" role="switch" aria-checked="false">
+        <span class="cf-sw-tx"><b>强制离线</b><em>打开后就算不会也不上网，只在本地答</em></span>
+        <span class="cf-sw-tk" aria-hidden="true"><i></i></span>
+      </button>
+    </div>
+
+    <div class="sk-bar cf-foot">
+      <button class="sk-btn" id="cfReset" type="button">
+        <svg viewBox="0 0 24 24" class="ic"><path d="M20 11a8 8 0 1 0-2.3 6.3M20 5v6h-6"/></svg>
+        <span>恢复默认</span>
+      </button>
+      <span class="cf-note" id="cfNote">改动立刻写盘，下次开机照旧</span>
+    </div>
+
+    <button class="sk-close" id="cfgClose" type="button">收起</button>
+  </div>
+</div>
+
+<!-- 缩略图悬停时跟出来的大预览 -->
+<div class="bg-peek" id="bgPeek" hidden></div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>

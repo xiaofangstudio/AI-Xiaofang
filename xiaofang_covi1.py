@@ -55,6 +55,28 @@ if not os.environ.get("XF_FORCE_CPU", ""):
         import cupy as _cp
         _cp.cuda.Device(0).use()
         _probe = _cp.zeros(1)          # 实际分配一次显存, 确认 CUDA 可用
+        # v2.9 稳定性修复: cupy.random._generator 用 lazy_import 把 cupyx 以"半初始化"
+        #   状态塞进 sys.modules; 若之后才首次 import cupyx.scipy, 就会抛
+        #   ModuleNotFoundError: No module named 'cupyx.scipy'; 'cupyx' is not a package
+        #   (表现为随机卡在启动的权重生成阶段)。这里在任何随机数使用之前,
+        #   先把 cupyx / cupyx.scipy 真正导入一次, 从根上消除该竞态。
+        try:
+            import cupyx
+            import cupyx.scipy  # noqa: F401
+        except Exception:
+            pass
+        # ★v3.9 同类竞态一次性封死: cupy 内部还有一批"用到才导"的子模块(nvrtc 编译器 /
+        #   random / linalg / fft / cuda 子模块)。它们在主线程里一次导全, 后面那两个后台
+        #   线程就再不会在"谁先 import"上撞车 —— 撞车的后果与 cupyx.scipy 那次一模一样:
+        #   随机抛 ModuleNotFoundError 或直接卡在启动阶段(表现为"莫名其妙就卡住了")。
+        for _m in ("cupy.cuda.nvrtc", "cupy.cuda.runtime", "cupy.random",
+                   "cupy.random._generator", "cupy.linalg", "cupy.fft",
+                   "cupy._core.core", "cupy._core._kernel",
+                   "cupyx.scipy.special", "cupyx.scipy.fft"):
+            try:
+                __import__(_m)
+            except Exception:
+                pass
         XP = _cp
         HAS_GPU = True
         _BACKEND = "GPU 加速 (CuPy/CUDA)"
@@ -305,7 +327,10 @@ def _looks_like_fragment(text):
     if re.search(r"[、，,；;：:（(【\[]\s*$", t):
         return True
     segs = [s.strip() for s in re.split(r"[。！？!?；;，,\n]", t) if s.strip()]
-    if len(segs) >= 3 and max(len(s) for s in segs) <= 4 and len("".join(segs)) <= 18:
+    # v2.8 修 BUG8: 英文短答(I'm fine, thanks, you?)不该被"碎片判定"误杀 ——
+    #   只有中文占主体时才启用这条"全员≤4字 + 总长≤18"的碎句判别; 纯英文/拉丁短答靠语义放行。
+    _cjk = sum(1 for c in t if "\u4e00" <= c <= "\u9fff")
+    if _cjk * 2 > len(t) and len(segs) >= 3 and max(len(s) for s in segs) <= 4 and len("".join(segs)) <= 18:
         return True
     return False
 
@@ -391,6 +416,13 @@ def _catch_all_reply(text=""):
     if _q and len(_q) < len(_raw):
         _q += "…"
     _lead = "「{}」这句".format(_q) if _q else "这句"
+    # v3.3 中英双语: 输入以英文为主 → 用英文兜底接话, 不把英文打回中文模板
+    if _looks_english(text):
+        return random.choice([
+            "I didn't quite catch what you're after — could you tell me a little more, or say what you'd like me to do (analyze / write / make a plan)? I'll get right on it.",
+            "I want to answer this properly rather than guess. Could you add a line or two about what you need and what form you want it in?",
+            "I'm here and listening — let me know the specifics (what it's for, who it's for) and I'll finish it right away.",
+        ])
     return random.choice([
         "{lead}我一时没抓准重点，你再说具体一点，我马上认真回你。".format(lead=_lead),
         "{lead}我得先问清楚才好答：想让我帮你分析一下、直接写出来，还是给你一个方案？说一句我就开始。".format(lead=_lead),
@@ -412,6 +444,19 @@ def _catch_all_reply(text=""):
 #        是 5, 但那词只有 11 个字母), 12 个字母里再连排 5 个以上基本就是脸滚键盘。
 #   原则: 宁可漏判(大不了照常回答), 不许误判(误判会把用户正经输入打成"看不懂")。
 _VOWELS = set("aeiou")
+
+
+def _looks_english(text):
+    """v3.3 中英双语: 判断这串输入是否以英文为主(拉丁字母占比 ≥70%)。
+    用于英文兜底路由 —— 只作"用不用英文接话"的偏好, 不参与任何知识判定。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    letters = [c for c in t if c.isalpha()]
+    if not letters:
+        return False
+    en = sum(1 for c in letters if _is_ascii_alpha(c))
+    return en / float(len(letters)) >= 0.7
 
 
 def _looks_like_nonsense(text):
@@ -596,7 +641,12 @@ if XF_TIER not in ("lite", "pro", "ultra"):
 #   v1.9 Covi1 校准(用户更正): Lite 不是"最小的那一档", 而是【当前 2.40B 本体】。
 #   所以 Lite 的天花板必须放到 3584(15 层 / 28 头 → ≈2.40B), 否则会自动退回 1408 的
 #   0.42B 小模型 —— 那就等于把现有模型偷偷换小了, 属于改错方向。
-_TIER_D_CAP = {"lite": 3584, "pro": 4096, "ultra": 10 ** 9}[XF_TIER]
+# v3.8 三档正式拉开距离(用户下令: 回 2.1B 级 + 三档必须真不一样):
+#   之前 Lite=2.40B / Pro=2.48B / Ultra=2.50B —— 头尾只差 0.1B, 三档就是"换个名字的同一台"。
+#   现在整条产品线重新排: Lite 收回到 ~2.07B(更快、更省, 就是用户熟悉的那个味);
+#   Pro 顶上原来的 2.40B; Ultra 冲到 2.50B。2.07B → 2.40B → 2.50B, 每跳都看得见差距。
+#   Lite 比 Pro/Ultra 更快更轻 —— 铁律: Lite 绝不能悄悄掉回 0.4B 小模型, 所以天花板锁死 3328。
+_TIER_D_CAP = {"lite": 3328, "pro": 3584, "ultra": 4096}[XF_TIER]
 _MODEL_TIERS = [t for t in _MODEL_TIERS if t[0] <= _TIER_D_CAP] or [_MODEL_TIERS[-1]]
 TIER_LINE = "FlphaLit Covi 1 " + XF_TIER.upper()
 # v1.8 Alpha: 尺度天花板 —— 默认 auto 仍以 2.4B 旗舰为限(实测启动 ~1.8s、前向 ~1s, 纯 CPU 也快);
@@ -604,13 +654,12 @@ TIER_LINE = "FlphaLit Covi 1 " + XF_TIER.upper()
 # v2.1 (t6 关键): 尺度天花板按【档位】给 —— 这是 Pro / Ultra 过去"名存实亡"的根因。
 #   旧版无论选哪档, 天花板都写死 auto→2.6e9, 于是 Lite/Pro/Ultra 全被压回同一台
 #   (3584,15,28,4) 2.40B —— 换个名字而已, 档位等于没分裂。
-#   现在: Lite 封在 2.41B(就是本体, 一点不缩水); Pro 放到 2.49B(实选 2.48B / 32 头);
-#   Ultra 放到 2.51B(实选 2.50B / 30 头)。三档参数量真不一样, 且各自严守 +0.1B 红线。
+# v3.8: 三档坐标落定 —— Lite≈2.07B / Pro≈2.40B / Ultra≈2.50B, 参数真正拉开。
 #   仍可用 XIAOFANG_SCALE=2b/3b/4b 或 xiaofang_settings.py 的 MODEL_SCALE 强行放开(老行为保留)。
 _TIER_SCALE_LIMIT = {
-    "lite":  2_410_000_000,   # 2.40B 本体 (int8 常驻 2.24GB)
-    "pro":   2_490_000_000,   # ≈2.48B (+0.09B) · 32 头 · int8 常驻 2.31GB
-    "ultra": 2_510_000_000,   # ≈2.50B (+0.10B) · 30 头 · int8 常驻 2.33GB
+    "lite":  2_100_000_000,   # ≈2.07B (int8 常驻 ~1.93GB) · 更快更省, 日常主力
+    "pro":   2_420_000_000,   # ≈2.40B · 28 头 · int8 常驻 2.24GB · 想得更深
+    "ultra": 2_520_000_000,   # ≈2.50B · 30 头 · int8 常驻 2.33GB · 最深档
 }
 _SCALE_CAP = str(os.environ.get("XIAOFANG_SCALE", "auto")).strip().lower()
 _ENV_SCALE_LIMIT = {"2b": 2_600_000_000, "3b": 3_400_000_000, "4b": 4_400_000_000}.get(_SCALE_CAP)
@@ -886,15 +935,24 @@ def _save_settings_field(key, value):
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "xiaofang_settings.py")
     with open(path, "r", encoding="utf-8") as f:
         src = f.read()
-    pat = re.compile(r"^(%s\s*=\s*)[^\r\n]*$" % re.escape(key), re.M)
+    pat = re.compile(r"^(%s\s*=\s*)([^\r\n]*)$" % re.escape(key), re.M)
     newval = "True" if value is True else ("False" if value is False else repr(value))
     if not pat.search(src):
         src = src.rstrip() + "\n%s = %s\n" % (key, newval)
     else:
-        src = pat.sub(lambda m: m.group(1) + newval, src)
+        def _repl(m):
+            _rest = m.group(2)
+            _cm = re.search(r"#.*$", _rest)
+            _tail = ("  " + _cm.group(0)) if _cm else ""
+            return m.group(1) + newval + _tail
+        src = pat.sub(_repl, src)
     with open(path, "w", encoding="utf-8") as f:
         f.write(src)
-    getattr(_S, key, None) and setattr(_S, key, value)
+    # v1.11 修短路: 原 `getattr(_S, key, None) and setattr(_S, key, value)` 在值为
+    #   False/0 时 and 短路 → 同进程内存里的 xiaofang_settings 属性停在旧值。改成显式
+    #   hasattr 判断, 保证「写了盘也同步进内存」。
+    if hasattr(_S, key):
+        setattr(_S, key, value)
 
 
 def _install_package(package):
@@ -1006,656 +1064,20 @@ pyfiglet = _LazyModule("pyfiglet")      # 只在画 ASCII 大字时才真正加�
 DDGS = _LazyDDGS()                      # 只在联网搜索时才真正加载(这个 import 老贵了)
 
 # ============================================================
-# v2.4 收口: 鹈鹕引擎彻底内联进主程序 —— 根目录不再留任何独立引擎文件。
-#   之前它虽然走 pelican_answer() 统一入口, 但实现仍是根目录下单独一个
-#   pelican_bike_covi1.py, 外人打开项目会纳闷"怎么还专门有个测鹈鹕的"。
-#   现在整段实现(配色 / 几何 / SVG 模板 / 语义解析 / 出图 / 落盘)全部内联在下面,
-#   零第三方依赖(纯标准库)。命中「鹈鹕骑自行车 / 鹈鹕猛猛蹬」就现场生成一张会动的
-#   SVG 并落盘, 参数每次重新随机(张张不重样), 传整数 seed 可复现同一条。
-#   对外唯一入口依旧是 pelican_answer(), 所有调用点零改动。
-# ============================================================
 
-# 鹈鹕引擎（原 pelican_bike_covi1.py 整段内联在此，已无同名文件）——
-# 「鹈鹕猛猛蹬」海边骑自行车 动态 SVG 生成器。C1 全系（Lite / Pro / Ultra）共用。
-# 零第三方依赖，只需要标准库。
-#
-# 对外只暴露五件事:
-#     is_pelican_bike(text)              -> 判断这句话是不是要"鹈鹕骑自行车"
-#     parse_constraints(text)            -> 解析附加要求（篮子 / 颜色 / 戴什么）
-#     pelican_bike_svg(seed, info)       -> 生成一段完整 <svg>（真 CSS 动画）
-#     pelican_bike_save(svg, info)       -> 落盘成 .svg 文件, 返回绝对路径
-#     pelican_bike_reply(text, seed)     -> 一步到位, 直接给出可以直接回给用户的文本
-#
-# 每次调用都会重新随机（配色 / 辐条 / 挂件 / 车筐里的鱼 / 踏频 / 浪速 / 云 / 海鸥 / 尘土 / 拟声词 …）,
-# 所以绝不会两次输出一模一样。传整数 seed 可复现同一条。
+# ═══ v2.8 · 通用 SVG/CSS 图像生成引擎已拆为独立文件 svgdream_covi1.py ═══
+#   鹈鹕只是它可以画的主题之一。对外保持 pelican_answer() 旧入口, 内部委托给独立引擎,
+#   process/_scene_answer/reply 三处调用点零改动。引擎缺失/加载失败 → 静默降级, 不崩。
+try:
+    import svgdream_covi1 as _SVGD
+    SVGDREAM_OK = True
+    pelican_answer = _SVGD.pelican_answer
+    svgdream_svg_dir = _SVGD.SVGDREAM_SVG_DIR
+except Exception:
+    SVGDREAM_OK = False
+    pelican_answer = lambda text: None
+    svgdream_svg_dir = ""
 
-# 这一段内联代码只用标准库这五个(文件顶部本来就已导入, 这里再写一遍是为了
-# 让它自成一体 —— 单独抽出来也能跑, 不依赖主程序顶部的导入)。
-import os
-import re
-import math
-import random
-import datetime
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 配色（天空 3 段 / 海 2 段 / 沙 2 段 / 太阳 / 太阳芯 / 影子）
-# ──────────────────────────────────────────────────────────────────────────────
-_PB_PALETTES = [
-    {"name": "清晨", "sky": ("#bfe6ff", "#eaf6ff", "#fff6e0"), "sea": ("#3f8fc4", "#1f5f92"),
-     "sand": ("#f4e0b8", "#e3c894"), "sun": "#ffd98a", "core": "#fff3c4", "shadow": "#b99a63"},
-    {"name": "正午", "sky": ("#8fd3ff", "#cbeaff", "#f2fbff"), "sea": ("#2f86c8", "#14517f"),
-     "sand": ("#f7e6bd", "#e6cd97"), "sun": "#ffe08a", "core": "#fff8d2", "shadow": "#b99a63"},
-    {"name": "黄昏", "sky": ("#ffb27a", "#ffd6a5", "#ffe9c9"), "sea": ("#d2704f", "#7a3f46"),
-     "sand": ("#f0c9a0", "#d9a878"), "sun": "#ff8a4c", "core": "#ffe2a6", "shadow": "#a06a45"},
-    {"name": "傍晚", "sky": ("#6f7fd6", "#9fb0ea", "#ffd9c2"), "sea": ("#2b4a86", "#16294f"),
-     "sand": ("#cbb5a2", "#a89484"), "sun": "#ffb27a", "core": "#ffe6c2", "shadow": "#6b5a4c"},
-    {"name": "夜色", "sky": ("#131a3a", "#243063", "#4a5aa0"), "sea": ("#1a2a55", "#0b1430"),
-     "sand": ("#5d5f7a", "#3e4058"), "sun": "#f2f5ff", "core": "#ffffff", "shadow": "#1b1e30"},
-]
-
-_PB_ACC_DESC = {
-    "": "什么也没戴",
-    "cap": "头顶扣了顶小凉帽",
-    "scarf": "脖子上绕了条围巾",
-    "shades": "架着副墨镜",
-    "flower": "羽毛上别了朵小花",
-}
-
-_PB_SFX = ["嗖——", "哗啦", "猛猛蹬", "蹬！蹬！", "呼——", "海在往后退"]
-
-_FONT = "Noto Sans CJK SC, Microsoft YaHei, PingFang SC, sans-serif"
-
-# 几何常量（画布 720 x 440，地面 y=340）
-_WY = 306          # 轮轴高度
-_RWX, _FWX = 302, 446
-_WR = 34           # 轮半径
-_BBX, _BBY, _CR = 374, 310, 24   # 五通 + 曲柄半径
-_HIPX, _HIPY = 352, 250          # 鹈鹕屁股（坐垫）
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 模板
-# ──────────────────────────────────────────────────────────────────────────────
-_PB_SVG_TPL = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 440" width="720" height="440" role="img" aria-label="鹈鹕在海边骑自行车">
-  <defs>
-    <linearGradient id="pbSky" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="@SKY1@"/><stop offset="0.64" stop-color="@SKY2@"/><stop offset="1" stop-color="@SKY3@"/>
-    </linearGradient>
-    <linearGradient id="pbSea" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="@SEA1@"/><stop offset="1" stop-color="@SEA2@"/>
-    </linearGradient>
-    <linearGradient id="pbSand" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="@SAND1@"/><stop offset="1" stop-color="@SAND2@"/>
-    </linearGradient>
-    <radialGradient id="pbSunG">
-      <stop offset="0" stop-color="@SUNCORE@" stop-opacity="0.95"/>
-      <stop offset="0.55" stop-color="@SUN@" stop-opacity="0.45"/>
-      <stop offset="1" stop-color="@SUN@" stop-opacity="0"/>
-    </radialGradient>
-    <style>
-      .pbSpinA{animation:pbSpinK @WHEELT@s linear infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLW@}
-      .pbSpinB{animation:pbSpinK @WHEELT@s linear infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLW@}
-      .pbCrank{animation:pbCrankK @CRANKT@s linear infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLC@}
-      .pbBob{animation:pbBobK @BOBT@s ease-in-out infinite;animation-delay:@DLB@}
-      .pbLegA{animation:pbLegAK @CRANKT@s ease-in-out infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLC@}
-      .pbLegB{animation:pbLegBK @CRANKT@s ease-in-out infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLC@}
-      .pbWing{animation:pbWingK @WINGT@s ease-in-out infinite;transform-box:fill-box;transform-origin:50% 50%;animation-delay:@DLG@}
-      .pbCloud{animation:pbDriftK @CLOUDT@s linear infinite}
-      .pbWave{animation:pbWaveK @WAVET@s linear infinite}
-      .pbWave2{animation:pbWaveK @WAVET2@s linear infinite}
-      .pbLap{animation:pbLapK @LAPT@s ease-in-out infinite}
-      .pbGull{animation:pbGullK @GULLT@s ease-in-out infinite}
-      .pbZoom{animation:pbZoomK @ZOOMT@s linear infinite}
-      .pbPulse{animation:pbPulseK @PULSET@s ease-in-out infinite;transform-box:fill-box;transform-origin:50% 50%}
-      .pbSpray{animation:pbSprayK @SPRAYT@s ease-out infinite}
-      .pbSfx{font-family:@FONT@;font-size:22px;font-weight:700;fill:@SFXC@;opacity:0.9}
-      @keyframes pbSpinK{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-      @keyframes pbCrankK{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-      @keyframes pbBobK{0%,100%{transform:translateY(0)}50%{transform:translateY(-@BOB@px)}}
-      @keyframes pbLegAK{0%,100%{transform:rotate(-@LEGA@deg)}50%{transform:rotate(@LEGA@deg)}}
-      @keyframes pbLegBK{0%,100%{transform:rotate(@LEGA@deg)}50%{transform:rotate(-@LEGA@deg)}}
-      @keyframes pbWingK{0%,100%{transform:rotate(@WGA@deg)}50%{transform:rotate(@WGB@deg)}}
-      @keyframes pbDriftK{from{transform:translateX(0)}to{transform:translateX(150px)}}
-      @keyframes pbWaveK{from{transform:translateX(0)}to{transform:translateX(-180px)}}
-      @keyframes pbLapK{0%,100%{opacity:0.22;transform:translateX(0)}50%{opacity:0.85;transform:translateX(-26px)}}
-      @keyframes pbGullK{0%{transform:translate(130px,0);opacity:0}25%{opacity:0.9}75%{opacity:0.9}100%{transform:translate(-230px,6px);opacity:0}}
-      @keyframes pbZoomK{0%{transform:translateX(110px);opacity:0}35%{opacity:0.8}100%{transform:translateX(-190px);opacity:0}}
-      @keyframes pbPulseK{0%,100%{opacity:0.55;transform:scale(1)}50%{opacity:0.95;transform:scale(1.07)}}
-      @keyframes pbSprayK{0%{opacity:0.95;transform:translate(0,0) scale(1)}100%{opacity:0;transform:translate(@SPXD@px,@SPYD@px) scale(0.35)}}
-    </style>
-  </defs>
-
-  <!-- 天空 / 太阳 / 云 / 海鸥 -->
-  <rect x="0" y="0" width="720" height="440" fill="url(#pbSky)"/>
-  <circle class="pbPulse" cx="@SUNX@" cy="@SUNY@" r="@SUNR@2" fill="url(#pbSunG)"/>
-  <circle cx="@SUNX@" cy="@SUNY@" r="@SUNR@" fill="@SUN@"/>
-@CLOUDS@
-@GULLS@
-
-  <!-- 海 + 浪 -->
-  <rect x="0" y="240" width="720" height="104" fill="url(#pbSea)"/>
-  <g class="pbWave"><path d="@WAVE1@" fill="none" stroke="@SEA1@" stroke-width="3.2" stroke-linecap="round" opacity="0.55"/></g>
-  <g class="pbWave2"><path d="@WAVE2@" fill="none" stroke="@FOAM@" stroke-width="2.4" stroke-linecap="round" opacity="0.5"/></g>
-  <path d="@LAP@" fill="none" stroke="@FOAM@" stroke-width="4" stroke-linecap="round" opacity="0.5" class="pbLap"/>
-
-  <!-- 沙滩 -->
-  <rect x="0" y="340" width="720" height="100" fill="url(#pbSand)"/>
-  <ellipse cx="374" cy="345" rx="104" ry="9" fill="@SHADOW@" opacity="0.26"/>
-
-  <!-- 速度线 / 水花 -->
-@SPEED@
-@SPRAY@
-
-  <!-- 车 + 鹈鹕（整体轻微上下颠） -->
-  <g class="pbBob">
-
-    <!-- 后轮 -->
-    <g transform="translate(@RWX@,@WY@)"><g class="pbSpinA">
-      <circle cx="0" cy="0" r="@WR@" fill="none" stroke="#2c3242" stroke-width="6"/>
-      <circle cx="0" cy="0" r="@WR2@" fill="none" stroke="#9aa4b2" stroke-width="3"/>
-      @SPOKES1@
-      <circle cx="0" cy="0" r="5" fill="#6b7280"/>
-    </g></g>
-
-    <!-- 前轮 -->
-    <g transform="translate(@FWX@,@WY@)"><g class="pbSpinB">
-      <circle cx="0" cy="0" r="@WR@" fill="none" stroke="#2c3242" stroke-width="6"/>
-      <circle cx="0" cy="0" r="@WR2@" fill="none" stroke="#9aa4b2" stroke-width="3"/>
-      @SPOKES2@
-      <circle cx="0" cy="0" r="5" fill="#6b7280"/>
-    </g></g>
-
-    <!-- 车架 -->
-    <g stroke="@FRAME@" stroke-width="5" stroke-linecap="round" fill="none">
-      <path d="M@BBX@,@BBY@ L@SEATX@,@SEATY@"/>
-      <path d="M@BBX@,@BBY@ L@HTX@,@HTY@"/>
-      <path d="M@SEATX@,@SEATY@ L@HTX@,@HTY@"/>
-      <path d="M@BBX@,@BBY@ L@RWX@,@WY@"/>
-      <path d="M@SEATX@,@SEATY@ L@RWX@,@WY@"/>
-      <path d="M@FWX@,@WY@ L@HTX@,@HTY@"/>
-    </g>
-    <path d="M330,246 q18,-9 33,2 q-15,7 -33,-2 z" fill="#2f3646"/>
-    <path d="M@HTX@,@HTY@ q9,-13 22,-11" fill="none" stroke="#2f3646" stroke-width="5" stroke-linecap="round"/>
-    <rect x="448" y="231" width="16" height="7" rx="3.5" fill="#1f2430" transform="rotate(-26 448 231)"/>
-
-    <!-- 曲柄 + 踏板 + 牙盘 -->
-    <g transform="translate(@BBX@,@BBY@)"><g class="pbCrank">
-      <rect x="-30" y="-30" width="60" height="60" fill="none" stroke="none"/>
-      <rect x="-4.5" y="-28" width="9" height="30" rx="4" fill="#4b5563"/>
-      <rect x="-4.5" y="-2" width="9" height="30" rx="4" fill="#4b5563"/>
-      <rect x="-9" y="-32" width="18" height="6" rx="2.6" fill="#1f2430"/>
-      <rect x="-9" y="26" width="18" height="6" rx="2.6" fill="#1f2430"/>
-      <circle cx="0" cy="0" r="14" fill="none" stroke="#9aa4b2" stroke-width="2.6"/>
-      <circle cx="0" cy="0" r="4.6" fill="#9aa4b2"/>
-    </g></g>
-
-    <!-- 车筐（里面放鱼） -->
-@BASKET@
-
-    <!-- 后腿 / 前腿 -->
-    <g transform="translate(@HIPX@,@HIPY@)"><g class="pbLegB">
-      <path d="M0,0 L6,40 L2,78" fill="none" stroke="@LEGCOL@" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-      <ellipse cx="2" cy="78" rx="9" ry="4" fill="@LEGCOL@"/>
-      <rect x="-45" y="-81" width="90" height="162" fill="none" stroke="none"/>
-    </g></g>
-
-    <!-- 身体 -->
-    <ellipse cx="352" cy="224" rx="42" ry="29" fill="#ffffff"/>
-    <ellipse cx="352" cy="233" rx="42" ry="19" fill="#e8eef8" opacity="0.55"/>
-    <path d="M314,218 q-30,-7 -46,5 q22,11 46,6 z" fill="#f2f6fc"/>
-    <path d="M300,224 q-24,-3 -36,6 q18,8 36,3 z" fill="#e4ebf6"/>
-
-    <!-- 脖子 + 头 -->
-    <path d="M382,214 C392,186 402,172 424,166" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>
-    <circle cx="424" cy="166" r="17" fill="#ffffff"/>
-    <path d="M414,158 q-3,-15 11,-19 q-5,11 2,17 z" fill="@CREST@"/>
-
-    <!-- 长喙 + 喉囊 -->
-    <path d="M434,160 L524,176 L434,176 Z" fill="@BEAK@"/>
-    <path d="M434,171 Q478,197 524,178 L434,178 Z" fill="@POUCH@" opacity="0.96"/>
-    <path d="M436,163 L520,176" fill="none" stroke="#00000022" stroke-width="1.4"/>
-    <circle cx="428" cy="161" r="3.7" fill="#1d2233"/>
-    <circle cx="429.3" cy="159.8" r="1.2" fill="#ffffff"/>
-
-    <!-- 翅膀（扇） -->
-    <g transform="translate(348,212)"><g class="pbWing">
-      <path d="M0,0 q27,-11 45,8 q-18,17 -45,8 q-10,-6 0,-16 z" fill="#eef3fa" stroke="#dde5f1" stroke-width="1.6"/>
-      <path d="M6,4 q22,-6 34,6" fill="none" stroke="#dde5f1" stroke-width="1.4"/>
-      <rect x="-52" y="-52" width="104" height="104" fill="none" stroke="none"/>
-    </g></g>
-
-    <!-- 挂件 -->
-@ACC@
-  </g>
-
-  <!-- 拟声词 -->
-@SFX@
-</svg>
-"""
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 意图判断
-# ──────────────────────────────────────────────────────────────────────────────
-def is_pelican_bike(text):
-    """这句话是不是「给我画/写一个鹈鹕骑自行车」这类诉求。"""
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    if any(k in t for k in ("算法", "代码", "函数", "程序", "脚本", "报错", "原理", "源码", "实现一下")):
-        return False
-    if any(k in t for k in ("摩托", "电动车", "汽车", "卡车", "机车", "火车", "飞机", "轮椅", "滑板", "三轮")):
-        return False
-    bird = any(k in t for k in ("鹈鹕", "塘鹅", "pelican", "鹈"))
-    if not bird:
-        return False
-    bike = any(k in t for k in ("自行车", "单车", "脚踏车", "骑行", "骑车", "蹬车", "猛猛蹬", "bike", "bicycle", "脚踏"))
-    if bike:
-        return True
-    return any(k in t for k in ("画", "写", "来", "生成", "做个", "弄个", "搞个", "一张", "骑", "蹬"))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 显式要求解析（v2.0）
-#   以前画什么全凭随机，用户说"前面要有篮子"它有 28% 概率偏不画 —— 那就成抬杠了。
-#   这里把用户这句里的硬要求抠出来，能抠到就照办，抠不到才交回随机（保持张张不同）。
-# ──────────────────────────────────────────────────────────────────────────────
-_CN_NUM = {"零": 0, "一": 1, "两": 2, "二": 2, "三": 3, "四": 4,
-           "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
-
-_NEG_KWS = ("不要", "不用", "别", "没有", "去掉", "拿掉", "不带", "不加",
-            "无需", "不装", "不放", "免了", "省了", "不配", "没装")
-
-
-def _cn_int(s):
-    """把「3 / 三 / 十二 / 二十三」这种数词转成整数，转不动返回 None。"""
-    s = (s or "").strip()
-    if not s:
-        return None
-    if s.isdigit():
-        try:
-            return int(s)
-        except Exception:
-            return None
-    if s in _CN_NUM:
-        return _CN_NUM[s]
-    if len(s) == 2 and s[0] == "十" and s[1] in _CN_NUM:
-        return 10 + _CN_NUM[s[1]]
-    if len(s) == 2 and s[1] == "十" and s[0] in _CN_NUM:
-        return _CN_NUM[s[0]] * 10
-    if len(s) == 3 and s[1] == "十" and s[0] in _CN_NUM and s[2] in _CN_NUM:
-        return _CN_NUM[s[0]] * 10 + _CN_NUM[s[2]]
-    return None
-
-
-def _negated_near(t, idx, span=7):
-    """idx 之前 span 个字里有没有否定词 —— 用来区分「要有篮子」和「不要篮子」。"""
-    lo = max(0, idx - span)
-    return any(k in t[lo:idx] for k in _NEG_KWS)
-
-
-def parse_constraints(text):
-    """抽出这句里的显式要求。抽不到就留空，让画面自己随机去。"""
-    t = (text or "").strip()
-    cons = {}
-    if not t:
-        return cons
-
-    # ① 车筐：要有 / 不要
-    _bi = -1
-    for w in ("篮子", "车筐", "筐", "basket"):
-        _i = t.find(w)
-        if _i >= 0:
-            _bi = _i if _bi < 0 else min(_bi, _i)
-    if _bi >= 0:
-        cons["basket"] = not _negated_near(t, _bi)
-        # ② 筐里几条鱼
-        m = (re.search(r"([0-9零一二两三四五六七八九十]+)\s*(?:条|只|尾)?\s*鱼", t)
-             or re.search(r"鱼[^0-9零一二两三四五六七八九十]{0,3}([0-9零一二两三四五六七八九十]+)\s*条", t))
-        if m:
-            n = _cn_int(m.group(1))
-            if n is not None:
-                cons["fish"] = max(1, min(6, n))
-    elif re.search(r"([0-9零一二两三四五六七八九十]+)\s*(?:条|只|尾)\s*鱼", t):
-        # 只说了装鱼、没说筐 —— 那鱼总得有地方放
-        cons["basket"] = True
-        n = _cn_int(re.search(r"([0-9零一二两三四五六七八九十]+)\s*(?:条|只|尾)\s*鱼", t).group(1))
-        if n is not None:
-            cons["fish"] = max(1, min(6, n))
-
-    # ③ 配色：用户点名哪个就用哪个
-    for p in _PB_PALETTES:
-        if p["name"] in t:
-            cons["palette"] = p["name"]
-            break
-
-    # ④ 挂件
-    if any(k in t for k in ("素面", "不戴", "什么都别戴", "不挂", "没挂件", "不要挂件")):
-        cons["acc"] = ""
-    elif any(k in t for k in ("围巾", "围脖")):
-        cons["acc"] = "scarf"
-    elif any(k in t for k in ("墨镜", "眼镜")):
-        cons["acc"] = "shades"
-    elif any(k in t for k in ("小花", "朵花", "别朵花", "别着花", "头上戴花")):
-        cons["acc"] = "flower"
-    elif any(k in t for k in ("帽子", "凉帽", "小帽")):
-        cons["acc"] = "cap"
-
-    # ⑤ 指名要它喊的话
-    m = re.search(r"(?:喊|叫|配音|来一声|吆喝)[一了声句出]{0,2}[「\"'“]?([^\s「」\"'“”，。！？]{2,8})[」\"'”]?", t)
-    if m:
-        cons["sfx"] = m.group(1)
-    return cons
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 生成
-# ──────────────────────────────────────────────────────────────────────────────
-def _spokes_path(n, r, phase):
-    out = []
-    for i in range(n):
-        a = phase + i * (2.0 * math.pi / n)
-        out.append('<line x1="%.2f" y1="%.2f" x2="%.2f" y2="%.2f" stroke="#b6bfcc" stroke-width="1.5"/>'
-                   % (r * math.cos(a), r * math.sin(a), -r * math.cos(a), -r * math.sin(a)))
-    return "\n      ".join(out)
-
-
-def _wave_path(y, up_down, humps, amp):
-    d = ["M%d,%d q45,%d 90,0" % (-540, y, -amp * up_down)]
-    d += ["t 90 0"] * (humps - 1)
-    return " ".join(d)
-
-
-def pelican_bike_svg(seed=None, info=None, cons=None):
-    """生成一段完整的动态 <svg> 文本。seed 传整数可复现，传 None 每次都不一样。
-    cons: parse_constraints() 抽出来的显式要求（要/不要车筐、几条鱼、配色、挂件、喊什么）。
-          给了 cons 就照办，没给的项继续随机 —— 所以既能听指令，也不会张张雷同。"""
-    rnd = random.Random(seed)
-    cons = cons or {}
-    pal = rnd.choice(_PB_PALETTES)
-    _want_pal = cons.get("palette")
-    if _want_pal:
-        for _p in _PB_PALETTES:
-            if _p["name"] == _want_pal:
-                pal = _p
-                break
-    spokes = rnd.choice((8, 10, 12))
-    phase = rnd.uniform(0, math.pi)
-    wheel_t = round(rnd.uniform(0.48, 0.9), 3)
-    crank_t = round(wheel_t * rnd.uniform(1.6, 2.2), 3)
-    leg_a = rnd.randint(9, 15)
-    wing_a = rnd.randint(-11, -2)
-    wing_b = rnd.randint(6, 17)
-    wing_t = round(rnd.uniform(0.7, 1.5), 3)
-    bob = rnd.randint(2, 5)
-    bob_t = round(rnd.uniform(0.85, 1.5), 3)
-    sunx, suny, sunr = rnd.randint(95, 620), rnd.randint(58, 150), rnd.randint(26, 42)
-    wave_t1 = round(rnd.uniform(4.5, 7.5), 3)
-    wave_t2 = round(rnd.uniform(6.5, 10.5), 3)
-    lap_t = round(rnd.uniform(3.2, 5.4), 3)
-    cloud_t = round(rnd.uniform(26, 46), 3)
-    gull_t = round(rnd.uniform(32, 58), 3)
-    zoom_t = round(rnd.uniform(0.7, 1.3), 3)
-    pulse_t = round(rnd.uniform(3.4, 6.2), 3)
-    spray_t = round(rnd.uniform(0.65, 1.15), 3)
-    spxd, spyd = rnd.randint(-64, -32), rnd.randint(-42, -16)
-    acc = rnd.choice(("", "cap", "cap", "scarf", "shades", "flower"))
-    acc_col = rnd.choice(("#e4574f", "#f0a63c", "#7cc4e8", "#a97fe0", "#5ec98f", "#ff8fb1"))
-    leg_col = rnd.choice(("#d99b3f", "#e0a944", "#c98a33"))
-    beak_col = rnd.choice(("#f0a63c", "#e8a13a", "#f2b25a"))
-    pouch_col = rnd.choice(("#f7c46c", "#f2b95e", "#f9cd80"))
-    crest_col = rnd.choice(("#ffd7a1", "#ffe0b3", "#f6c98c"))
-    frame_col = rnd.choice(("#2c3242", "#3c4a63", "#7a3f46", "#2f5d50"))
-    basket_col = rnd.choice(("#e3c184", "#d9b271", "#efd39a"))
-    fishn = rnd.randint(1, 3)
-    cloudn = rnd.randint(2, 4)
-    gulln = rnd.randint(0, 3)
-    sprayn = rnd.randint(3, 6)
-    has_basket = rnd.random() < 0.72
-    sfx = rnd.choice(_PB_SFX) if rnd.random() < 0.62 else ""
-
-    # ── 用户点名要求优先于随机 ───────────────────────────────────────────
-    _honored = []
-    if cons.get("basket") is not None:
-        has_basket = bool(cons["basket"])
-        _honored.append("车筐 → " + ("要" if has_basket else "不要"))
-    if has_basket:
-        if cons.get("fish") is not None:
-            fishn = int(cons["fish"])
-            _honored.append("筐里 %d 条鱼" % fishn)
-    else:
-        fishn = 0
-    if cons.get("palette"):
-        _honored.append("配色 → " + cons["palette"])
-    if cons.get("acc") is not None:
-        acc = cons["acc"]
-        _honored.append("挂件 → " + (_PB_ACC_DESC.get(acc, "") or "什么也没戴"))
-    if cons.get("sfx"):
-        sfx = cons["sfx"]
-        _honored.append("喊 → " + sfx)
-
-    # 云
-    clouds = []
-    for i in range(cloudn):
-        cx, cy = rnd.randint(20, 690), rnd.randint(34, 132)
-        sc = round(rnd.uniform(0.6, 1.25), 2)
-        op = round(rnd.uniform(0.5, 0.92), 2)
-        dl = "-%.2fs" % rnd.uniform(0, cloud_t)
-        clouds.append(
-            '<g class="pbCloud" style="animation-delay:%s%s">'
-            '<g transform="translate(%d,%d) scale(%s)" opacity="%s">'
-            '<ellipse cx="0" cy="0" rx="34" ry="15" fill="#ffffff"/>'
-            '<ellipse cx="24" cy="5" rx="26" ry="12" fill="#ffffff"/>'
-            '<ellipse cx="-22" cy="6" rx="22" ry="10" fill="#ffffff"/></g></g>'
-            % (dl, "", cx, cy, sc, op))
-
-    # 海鸥
-    gulls = []
-    for i in range(gulln):
-        gy = rnd.randint(66, 176)
-        sc = round(rnd.uniform(0.7, 1.15), 2)
-        dl = "-%.2fs" % rnd.uniform(0, gull_t)
-        gulls.append(
-            '<g class="pbGull" style="animation-delay:%s">'
-            '<g transform="translate(%d,%d) scale(%s)" fill="none" stroke="#ffffff" stroke-width="2.4" '
-            'stroke-linecap="round" opacity="0.85">'
-            '<path d="M-13,0 q7,-9 13,0 q6,-9 13,0"/></g></g>'
-            % (dl, rnd.randint(180, 520), gy, sc))
-
-    # 速度线
-    speed = []
-    for i in range(4):
-        y = rnd.randint(276, 336)
-        ln = rnd.randint(38, 92)
-        x0 = rnd.randint(60, 300)
-        dl = "-%.2fs" % rnd.uniform(0, zoom_t)
-        op = round(rnd.uniform(0.25, 0.55), 2)
-        speed.append('<line class="pbZoom" style="animation-delay:%s" x1="%d" y1="%d" x2="%d" y2="%d" '
-                     'stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" opacity="%s"/>'
-                     % (dl, x0, y, x0 - ln, y, op))
-
-    # 水花
-    spray = []
-    for i in range(sprayn):
-        cx = rnd.randint(478, 560)
-        cy = rnd.randint(330, 340)
-        r = round(rnd.uniform(2.2, 4.6), 2)
-        dl = "-%.2fs" % rnd.uniform(0, spray_t)
-        spray.append('<circle class="pbSpray" style="animation-delay:%s" cx="%d" cy="%d" r="%s" fill="%s" opacity="0.9"/>'
-                     % (dl, cx, cy, r, pal["sea"][0]))
-
-    # 辐条
-    sp1 = _spokes_path(spokes, _WR - 5, phase)
-    sp2 = _spokes_path(spokes, _WR - 5, phase + math.pi / spokes)
-
-    # 车筐 + 鱼
-    if has_basket:
-        fish = []
-        for i in range(fishn):
-            fx = 444 + i * 11 + rnd.randint(-1, 2)
-            fy = rnd.randint(203, 213)
-            fc = rnd.choice(("#8fd3ff", "#b8e6f7", "#9ad0e8", "#ffd6a5"))
-            fish.append('<ellipse cx="%d" cy="%d" rx="6.6" ry="3.4" fill="%s"/>'
-                        '<path d="M%d,%d l-7,-4 l0,8 z" fill="%s"/>' % (fx, fy, fc, fx - 6, fy, fc))
-        basket = ('    <g>\n      <path d="M436,214 l42,0 l-6,26 l-30,0 z" fill="%s" stroke="#b9932f" stroke-width="1.6"/>\n'
-                  '      <path d="M440,221 l34,0 M441,228 l32,0" stroke="#b9932f" stroke-width="1.2" fill="none"/>\n'
-                  '      %s\n    </g>' % (basket_col, "\n      ".join(fish)))
-    else:
-        basket = "    <!-- 这次没装车筐 -->"
-
-    # 挂件
-    acc_map = {
-        "cap": '<path d="M410,152 q15,-13 31,-4 l2,6 l-33,2 z" fill="%s"/>'
-               '<path d="M441,154 l17,4 l-19,2 z" fill="%s"/>' % (acc_col, acc_col),
-        "scarf": '<path d="M404,194 q-14,3 -21,15 q11,5 18,-5 z" fill="%s"/>'
-                 '<path d="M386,206 q-12,10 -14,26 q7,-2 10,-12 z" fill="%s"/>' % (acc_col, acc_col),
-        "shades": '<path d="M416,157 l20,3 l-2,8 l-18,-2 z" fill="#243043" opacity="0.92"/>',
-        "flower": '<circle cx="416" cy="151" r="4.4" fill="%s"/><circle cx="416" cy="151" r="1.7" fill="#fff5c2"/>' % acc_col,
-    }
-    acc_svg = "    " + acc_map.get(acc, "<!-- 这次素面朝天 -->")
-
-    sfx_svg = ""
-    if sfx:
-        sfx_svg = ('  <text class="pbSfx" x="%d" y="%d" transform="rotate(-8 %d %d)">%s</text>'
-                   % (rnd.randint(486, 560), rnd.randint(170, 232), 520, 200, sfx))
-
-    svg = _PB_SVG_TPL
-    rep = {
-        "@SKY1@": pal["sky"][0], "@SKY2@": pal["sky"][1], "@SKY3@": pal["sky"][2],
-        "@SEA1@": pal["sea"][0], "@SEA2@": pal["sea"][1],
-        "@SAND1@": pal["sand"][0], "@SAND2@": pal["sand"][1],
-        "@SUN@": pal["sun"], "@SUNCORE@": pal["core"], "@SHADOW@": pal["shadow"],
-        "@FOAM@": "#ffffff",
-        "@SUNX@": str(sunx), "@SUNY@": str(suny), "@SUNR@": str(sunr),
-        "@BOB@": str(bob), "@BOBT@": str(bob_t),
-        "@WHEELT@": str(wheel_t), "@CRANKT@": str(crank_t),
-        "@LEGA@": str(leg_a), "@WGA@": str(wing_a), "@WGB@": str(wing_b), "@WINGT@": str(wing_t),
-        "@CLOUDT@": str(cloud_t), "@WAVET@": str(wave_t1), "@WAVET2@": str(wave_t2),
-        "@LAPT@": str(lap_t), "@GULLT@": str(gull_t), "@ZOOMT@": str(zoom_t),
-        "@PULSET@": str(pulse_t), "@SPRAYT@": str(spray_t),
-        "@SPXD@": str(spxd), "@SPYD@": str(spyd),
-        "@DLW@": "-%.2fs" % rnd.uniform(0, wheel_t), "@DLC@": "-%.2fs" % rnd.uniform(0, crank_t),
-        "@DLB@": "-%.2fs" % rnd.uniform(0, bob_t), "@DLG@": "-%.2fs" % rnd.uniform(0, wing_t),
-        "@WAVE1@": _wave_path(246, 1, 17, 9), "@WAVE2@": _wave_path(286, -1, 17, 7),
-        "@LAP@": _wave_path(338, 1, 17, 4),
-        "@RWX@": str(_RWX), "@WY@": str(_WY), "@WR@": str(_WR), "@WR2@": str(_WR - 8),
-        "@FWX@": str(_FWX), "@BBX@": str(_BBX), "@BBY@": str(_BBY),
-        "@SEATX@": "348", "@SEATY@": "252", "@HTX@": "438", "@HTY@": "248",
-        "@HIPX@": str(_HIPX), "@HIPY@": str(_HIPY),
-        "@SPOKES1@": sp1, "@SPOKES2@": sp2,
-        "@FRAME@": frame_col, "@LEGCOL@": leg_col, "@BEAK@": beak_col,
-        "@POUCH@": pouch_col, "@CREST@": crest_col,
-        "@CLOUDS@": "\n  ".join(clouds), "@GULLS@": "\n  ".join(gulls),
-        "@SPEED@": "\n  ".join(speed), "@SPRAY@": "\n  ".join(spray),
-        "@BASKET@": basket, "@ACC@": acc_svg, "@SFX@": sfx_svg, "@FONT@": _FONT,
-        "@SFXC@": "#fff8e7" if pal["name"] != "正午" else "#3b3b3b",
-    }
-    for k, v in rep.items():
-        svg = svg.replace(k, v)
-
-    if info is not None:
-        info.update({
-            "seed": seed,
-            "palette": pal["name"],
-            "spokes": spokes,
-            "acc": acc,
-            "acc_desc": _PB_ACC_DESC.get(acc, ""),
-            "fish": fishn if has_basket else 0,
-            "basket": bool(has_basket),
-            "cadence": crank_t,
-            "wheel_t": wheel_t,
-            "clouds": cloudn,
-            "gulls": gulln,
-            "sfx": sfx,
-            "frame": frame_col,
-            "cons": dict(cons),
-            "honored": list(_honored),
-            "variant": "%s · %d 根辐条 · %s · 车筐 %d 条鱼 · 踏频约 %.1f 秒一圈"
-                       % (pal["name"], spokes, _PB_ACC_DESC.get(acc, ""), fishn if has_basket else 0, crank_t),
-        })
-    return svg
-
-
-def pelican_bike_save(svg, info=None, folder=None):
-    """把 SVG 落盘。返回绝对路径；出任何问题都返回空串，绝不抛异常打断对话。"""
-    try:
-        base = folder or os.path.join(os.path.dirname(os.path.abspath(__file__)), "生成画面")
-        os.makedirs(base, exist_ok=True)
-        now = datetime.datetime.now()
-        pal = (info or {}).get("palette", "画面")
-        name = "鹈鹕骑自行车_%s_%s.svg" % (pal, now.strftime("%m%d_%H%M%S"))
-        path = os.path.join(base, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(svg)
-        if info is not None:
-            info["path"] = path
-            info["filename"] = name
-            try:
-                info["rel"] = os.path.relpath(path, os.path.dirname(os.path.abspath(__file__)))
-            except Exception:
-                info["rel"] = name
-        return path
-    except Exception:
-        return ""
-
-
-def pelican_bike_reply(text="鹈鹕骑自行车", seed=None, save=True, folder=None, cons=None):
-    """一步到位：解析要求 + 随机生成 + 落盘 + 组装一段可以直接回给用户的文本。"""
-    info = {}
-    if cons is None:
-        cons = parse_constraints(text)
-    svg = pelican_bike_svg(seed, info, cons)
-    path = pelican_bike_save(svg, info, folder) if save else ""
-    lines = [
-        "《鹈鹕骑自行车》· 这次画的是:",
-        "- 配色: " + info["palette"],
-        "- 辐条: %d 根" % info["spokes"],
-        "- 挂件: " + (info["acc_desc"] or "什么也没戴"),
-        "- 车筐: " + ("%d 条鱼" % info["fish"] if info["basket"] else "这次没装"),
-        "- 踏频: 约 %.1f 秒一圈" % info["cadence"],
-    ]
-    if info.get("sfx"):
-        lines.append("- 它喊了一声: " + info["sfx"])
-    if info.get("honored"):
-        lines.append("- 按你点名要求改的: " + "；".join(info["honored"]))
-    if path:
-        lines += ["", "存成了: " + info.get("rel", path), "用浏览器打开就是动的 —— 轮子在转, 腿在蹬, 翅膀在扇, 浪在推。"]
-    else:
-        lines += ["", "（落盘没成功, 但画面已经生成好了）"]
-    return "\n".join(lines)
-
-
-# ── 鹈鹕引擎的对外收口(内联后依旧是"一个统一入口") ──────────────────────────
-class _PelicanInline(object):
-    """兼容壳: 以前 PELICAN / _get_pelican() 给的是模块对象, 内联后给一个
-    同名同接口的对象, 老调用点一行都不用改。"""
-
-    is_pelican_bike = staticmethod(is_pelican_bike)
-    parse_constraints = staticmethod(parse_constraints)
-    pelican_bike_svg = staticmethod(pelican_bike_svg)
-    pelican_bike_save = staticmethod(pelican_bike_save)
-    pelican_bike_reply = staticmethod(pelican_bike_reply)
-
-
-PELICAN = _PelicanInline()              # 内联后恒可用, 不再是"可能为 None 的占位"
-
-
-def _get_pelican():
-    """内联版: 引擎就在本文件里, 恒可用, 不会再出现"少一个文件就开不了机"。"""
-    return PELICAN
-
-
-PELICAN_SVG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "生成画面")
-
-
-def pelican_answer(text):
-    """v2.0 鹈鹕引擎统一入口: 是「鹈鹕骑自行车」就出动态 SVG, 否则返回 None 让位给别的路由。"""
-    try:
-        if is_pelican_bike(text):
-            return pelican_bike_reply(text, folder=PELICAN_SVG_DIR)
-    except Exception:
-        return None
-    return None
 
 
 
@@ -1753,13 +1175,16 @@ def _rss_bytes():
 
 
 _MEM_GUARD_STAT = {"peak_gb": 0.0, "trim": 0, "gpu_peak_gb": 0.0, "gpu_trim": 0}
+_MEM_RELEASE_CB = {"fn": None}   # v1.11: _mem_guard 越线时回调「真正释放 _f32 镜像」的入口(由 XiaoFang 启动时登记)
 GPU_SOFT_RATIO = 0.88               # v3.2: 显存用量占总量的比例超过它 → 把 cupy 池里的空闲块还回去
+GPU_HARD_GB = 5.0                   # v3.8: 显存绝对红线 —— 谁都不能顶破 5GB(用户定死), 到线照样强制回收
 
 
 def _gpu_guard(force=False):
     """v3.2 显存守门员: 实测 8GB 卡连续训练后 cupy 已用 6.59GB / 池内闲置 2.43GB ——
     内存红线守得住, 但显存才是真紧的那根。到线(或 force)就把 cupy 内存池里的**空闲块**还给
     驱动器(不动正在用的张量), 下一次分配就不至于 OOM。返回 (已用GB, 归还块数) 或 None。
+    v3.8: 加一道绝对硬限 —— 用量(不管占总比多低)一旦逼近 5GB, 同样强制回收, 石破天惊也顶不破红线。
     """
     try:
         import cupy as _cp
@@ -1768,14 +1193,17 @@ def _gpu_guard(force=False):
     try:
         free, total = _cp.cuda.runtime.memGetInfo()
         used = float(total - free)
+        used_gb = used / (1024.0 ** 3)
         if total:
             _MEM_GUARD_STAT["gpu_peak_gb"] = max(
-                _MEM_GUARD_STAT.get("gpu_peak_gb", 0.0), used / (1024.0 ** 3))
+                _MEM_GUARD_STAT.get("gpu_peak_gb", 0.0), used_gb)
         rel = 0
-        if force or (total and used / float(total) >= GPU_SOFT_RATIO):
+        over_total = total and used / float(total) >= GPU_SOFT_RATIO
+        over_abs = used_gb >= GPU_HARD_GB - 0.3        # 逼近绝对红线就差 0.3GB 就动手
+        if force or over_total or over_abs:
             rel = int(_cp.get_default_memory_pool().free_all_blocks() or 0)
             _MEM_GUARD_STAT["gpu_trim"] = _MEM_GUARD_STAT.get("gpu_trim", 0) + 1
-        return (used / (1024.0 ** 3), rel)
+        return (used_gb, rel)
     except Exception:
         return None
 
@@ -1796,14 +1224,19 @@ def _mem_guard(force=False):
         _MEM_GUARD_STAT["peak_gb"] = max(_MEM_GUARD_STAT["peak_gb"], rss / (1024.0 ** 3))
     over = bool(rss and rss > MEM_HARD_CAP)
     if force or over:
-        if _WC_USED[0]:
-            _WC_USED[0] = 0                     # 丢掉冻结权重镜像, 立刻把内存交回去
-            _MEM_GUARD_STAT["trim"] += 1
-        try:
-            import gc as _gc
-            _gc.collect()
-        except Exception:
-            pass
+        # v1.11 修_误: 不再只是把 _WC_USED 账本清零。越线就真调用登记好的
+        #   release_f32_cache() —— 遍历所有 Qint 把 ._f32 镜像丢掉并 gc, 内存真的压下来。
+        _dropped = 0
+        _cb = _MEM_RELEASE_CB.get("fn")
+        if _cb:
+            try:
+                _dropped = int(_cb() or 0)
+            except Exception:
+                _dropped = 0
+        if not _dropped and _WC_USED[0]:     # 兜底: 回调没登记/没释放时至少把账本清空
+            _WC_USED[0] = 0
+        if _dropped:
+            _MEM_GUARD_STAT["trim"] += _dropped
     return over
 
 
@@ -2169,7 +1602,55 @@ def _tick_release():
         _TICK["own"] = False
 
 
-def _typewrite(text, color=C_REPLY, delay=None, end="\n"):
+# ══════════════════════════════════════════════════════════════════════════
+# · Web 托管模式（xiaofang_web.py 注入 XF_WEB=1 时打开）
+#   本机 CLI 一切照旧；只是把"该给网页看的"内容, 用一行带哨兵前缀的 JSON
+#   顺带送出去 —— 网页那边认得这个哨兵, 就不用去猜一堆 ANSI 光标控制序列。
+#   没开 XF_WEB 时这几个函数一律空转, 对命令行零影响、零开销。
+# ══════════════════════════════════════════════════════════════════════════
+_XF_WEB = bool((os.environ.get("XF_WEB") or "").strip())
+XF_WEB_TAG = "\x01XF\x01"
+
+
+def _xf_web_emit(kind, text=""):
+    """给网页送一条结构化事件。
+
+    kind: user(用户说的话) / say(小方的正式回答) / think(思考过程) /
+          note(提示行) / cmd(斜杠命令) / ready(引擎已就绪) / bye(退出)
+    """
+    if not _XF_WEB:
+        return
+    try:
+        with _PRINT_LOCK:
+            sys.stdout.write(XF_WEB_TAG + json.dumps(
+                {"t": kind, "x": str(text)}, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+    except Exception:
+        pass
+
+
+def _xf_web_sniff(text, kind=None, color=None):
+    """把一段"正要打到屏幕上的正文"归类一下再转给网页。
+
+    归类只认引擎自己早就有的老规矩, 所以【一个调用点都不用动】:
+      · 显式传了 kind 就用 kind(想强制指定时用);
+      · "小方: xxx" 形式的正式回答 → say(前缀削掉, 免得网页里每一段都顶着"小方: ");
+      · 深色(C_DEEP)的整块逐行输出 → think(思考过程);
+      · 其余(提示 / 报错 / 进度条)不单独发, 交给原始日志通道兜住, 不丢。
+    """
+    if not _XF_WEB:
+        return
+    k, t = kind, text
+    if k is None:
+        if t.startswith("小方: "):
+            k, t = "say", t[len("小方: "):]
+        elif color == C_DEEP:
+            k = "think"
+    if k:
+        _xf_web_emit(k, t)
+
+
+def _typewrite(text, color=C_REPLY, delay=None, end="\n", kind=None):
     # v1.6 Flash: 默认打字延迟 0.035→0.018
     # v1.8 Alpha: 默认延迟改由速度档位决定(TYPE_DELAY), 显式传参时仍以传参为准。
     # v1.8 Alpha(真打字机): 打出来的每一个字都必须"小方已经算出来" ——
@@ -2181,6 +1662,7 @@ def _typewrite(text, color=C_REPLY, delay=None, end="\n"):
     if delay is None:
         delay = TYPE_DELAY
     text = str(text)
+    _xf_web_sniff(text, kind, color)       # v3.4: Web 托管时顺带把这段正文抄给网页(未开则空转)
     # v1.4: 思考实时打字机(live)时直接逐字打出; 否则(折叠/缓冲模式)先进 buf 由面板重绘。
     # 答案阶段 capture=False 始终逐字打字。
     if UI_ST["capture"] and not UI_ST.get("live"):
@@ -2218,11 +1700,12 @@ def _typewrite(text, color=C_REPLY, delay=None, end="\n"):
         sys.stdout.flush()
 
 
-def _typewrite_lines(lines, color=C_DEEP, line_delay=None):
+def _typewrite_lines(lines, color=C_DEEP, line_delay=None, kind=None):
     # v1.8 Alpha: 行间隔由速度档位决定(THINK_LINE_DELAY), 显式传参时仍以传参为准。
     # v1.8 Alpha(真打字机): 逐行版同样只打"已登记的真实产出", 节奏同样跟着真实产出速率。
     if line_delay is None:
         line_delay = THINK_LINE_DELAY
+    _xf_web_sniff("\n".join(str(x) for x in lines), kind, color)   # v3.4: 同上, 抄给网页
     # v1.4: 思考实时打字机(live)时逐行打出; 否则(折叠/缓冲模式)按行进 buf 由面板重绘。
     if UI_ST["capture"] and not UI_ST.get("live"):
         _stream_claim("\n".join(str(x) for x in lines))
@@ -2436,10 +1919,12 @@ def _ui_status_text():
     # v2.4 美化: 状态条重排 —— 层数换成进度条 + 百分比, 各段用统一的分隔符,
     #   整条读起来是"一句话", 不再是一串等号似的数字。
     _pct = int(round(l / float(max(1, n)) * 100))
-    return ("⟳ 小方{}  ⏱ {}s  ·  {} {} {}%  ·  ▤ {}  ·  ✎ {} 字  ·  {}".format(
+    _tokr = UI_ST.get("tok_s") or 0.0
+    return ("⟳ 小方{}  ⏱ {}s  ·  {} {} {}%  ·  ▤ {}  ·  ✎ {} 字  ·  💨 {}tok/s  ·  {}".format(
         ("思考中" if UI_ST["capture"] else "已就绪"), _sec,
         _mini_bar(l, n), l, _pct,
-        _ui_token_display(), _STREAM["produced"], st))
+        _ui_token_display(), _STREAM["produced"],
+        (_tokr if _tokr else 0), st))
 
 
 def _panel_render():
@@ -2559,6 +2044,12 @@ _read_prompt_pending = True     # True=当前可绘制提示符(空余期), 显�
 def _show_read_prompt():
     """主线程在空闲态绘制"你: "。若读线程正在交互回显(用户正打字), 由 lock 避免行内交错。"""
     global _read_prompt_pending
+    if _XF_WEB:
+        # v3.4 Web 托管: 提示符由网页画, 本地不重复打, 也就没有"画提示符"这回事。
+        #   注意别拿这个函数当"答完了"的信号 —— 它每 0.15 秒被叫一次, 又和打印锁
+        #   纠缠, 拿去当信号会漏报也会重报。真正的 idle 由 _main_loop 在
+        #   一轮处理完、信箱彻底空掉那一刻发(见 _main_loop 内注释)。
+        return
     if not _read_prompt_pending:
         return
     with _PRINT_LOCK:
@@ -2650,6 +2141,13 @@ def _read_command(prompt="你: "):
        · /undo /new /exit 需 Y/N 确认;
        · 模型思考中(_SYS_BUSY)只更新输入行、不画调色板, 避免与打字机撞屏;
        · 不支持逐键读入的环境自动回退普通 input()."""
+    if _XF_WEB:
+        # Web 托管: 输入框在网页那边 —— 这里只从 stdin 收一行就够,
+        #   不带提示符(提示符交给网页画), 免得日志里糊出一堆 "你: 你: 你:"。
+        try:
+            return input("")
+        except Exception:
+            return ""
     if os.name != "nt":
         try:
             return input(C_REPLY + prompt + C_RESET)
@@ -3867,6 +3365,79 @@ def _enable_console_mouse():
         pass
 
 
+def _is_ascii_alpha(c):
+    return ('a' <= c <= 'z') or ('A' <= c <= 'Z')
+
+
+# v3.4 更细更准地拆 token: 把「数字+单位 / 小数 / 百分比 / 温度 / 英文(可带数字的代码词)」
+#   锁成一个原子, 绝不切成一地碎片 —— 病灶(用户原话): "600 KB 别拆成 6 0 0 K B"。
+#   注意: 纯字母单字(如 K)也会被锁成原子, 与旧版"逐字母单token"结果一致, 不改变词表。
+_ATOMS = re.compile(r'\d+(?:[.,]\d+)*\s*(?:[A-Za-z%°℃#]+)%?|\d+(?:[.,]\d+)*|[A-Za-z][A-Za-z0-9]*')
+
+
+def _is_atom_seg(t):
+    return bool(t) and bool(_ATOMS.fullmatch(t))
+
+
+# v3.4 多语言: 用户用哪种语言提问, 输出就朝哪个方向作答(至少给足"引导行+概念词")。
+_LANG_GREET = {
+    "en": "Here's my answer:",
+    "ja": "私の答えです：",
+    "ko": "제 답변입니다:",
+    "fr": "Voici ma réponse :",
+    "de": "Hier ist meine Antwort:",
+    "es": "Aquí está mi respuesta:",
+    "ru": "Вот мой ответ:",
+    "latin": "Here's my answer:",
+    "other": "Here's my answer:",
+}
+
+
+def _detect_lang(text):
+    """v3.4 多语言: 探测输入语言(zh / en / ja / ko / fr / de / es / ru / …)。
+
+    脚本分布锁定中日韩; 拉丁文字靠高频功能词指纹猜语种; 短句/单闻都猜不出就回 en
+    (英文是小方最常被外文问到的), 谁也拦不住 —— 脚本识别与指纹都不依赖任何外部服务。"""
+    t = (text or "").strip()
+    if not t:
+        return "zh"
+    cjk = ja = ko = lat = cyr = 0
+    for c in t:
+        if '\u4e00' <= c <= '\u9fff':
+            cjk += 1
+        elif '\u3040' <= c <= '\u30ff':
+            ja += 1
+        elif '\uac00' <= c <= '\ud7a3':
+            ko += 1
+        elif '\u0400' <= c <= '\u04ff':
+            cyr += 1
+        elif _is_ascii_alpha(c):
+            lat += 1
+    total = cjk + ja + ko + lat + cyr
+    if total == 0:
+        return "zh"
+    if ko and ko >= max(1, cjk + ja) and ko >= lat + cyr:
+        return "ko"
+    if ja and ja >= cjk and ja >= lat + cyr:
+        return "ja"
+    if cyr and cyr >= lat and cjk == 0:
+        return "ru"
+    if cjk and cjk >= total * 0.5:
+        return "zh"
+    low = t.lower()
+    _hit = lambda ws: sum(1 for w in ws
+                          if w in low if re.search(r"(?<![a-z])" + re.escape(w) + r"(?![a-z])", low))
+    scores = {
+        "en": _hit(("the", "is", "you", "and", "what", "how", "are", "your", "please", "this")),
+        "fr": _hit(("le", "la", "les", "des", "est", "vous", "pour", "avec", "une", "que", "qui")),
+        "de": _hit(("der", "die", "und", "ist", "ich", "ein", "eine", "fur", "auf", "mit")),
+        "es": _hit(("el", "los", "que", "para", "con", "es", "una", "por", "como")),
+        "ru": _hit(("как", "что", "это", "для", "не", "он", "она")),
+    }
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] >= 1 else ("en" if lat else "zh")
+
+
 class Tokenizer:
     _SKIP = set(" \t\r\n，。！？、,.!?;:\"'…~`()——（）【】《》<>'·•·／/\\|")
 
@@ -3893,8 +3464,39 @@ class Tokenizer:
         for w in words:
             self._add(w)
 
+    # v3.3 中英双语: 已知英文单词整词成 token(大小写不敏感)。只看词典里已有的英文词,
+    #   未知英文单词返回 0 落回逐字母原逻辑 —— 不新增词表、不破坏既有权重缓存。
+    def _en_len_at(self, text, i):
+        if not _is_ascii_alpha(text[i]):
+            return 0
+        j = i
+        while j < len(text) and _is_ascii_alpha(text[j]):
+            j += 1
+        if j == i:
+            return 0
+        word = text[i:j]
+        if word in self.dictionary or word.lower() in self.dictionary:
+            return j - i
+        return 0
+
+    def _en_word_end_at(self, text, i):
+        if not _is_ascii_alpha(text[i - 1]):
+            return 0
+        j = i
+        while j - 1 >= 0 and _is_ascii_alpha(text[j - 1]):
+            j -= 1
+        if j == i:
+            return 0
+        word = text[j:i]
+        if word in self.dictionary or word.lower() in self.dictionary:
+            return i - j
+        return 0
+
     def _hit_at(self, text, i):
         """位置 i 起是否有词典词命中 → 返回词长(没有则 0)。供正向匹配用。"""
+        _en = self._en_len_at(text, i)
+        if _en:
+            return _en
         upper = min(self.max_len, len(text) - i)
         for length in range(upper, 1, -1):
             if text[i:i + length] in self.dictionary:
@@ -3903,6 +3505,9 @@ class Tokenizer:
 
     def _hit_end_at(self, text, i):
         """以 i 为结尾是否有词典词命中 → 返回词长(没有则 0)。供反向匹配用。"""
+        _en = self._en_word_end_at(text, i)
+        if _en:
+            return _en
         for length in range(min(self.max_len, i), 1, -1):
             if text[i - length:i] in self.dictionary:
                 return length
@@ -3941,6 +3546,19 @@ class Tokenizer:
         out.reverse()
         return out
 
+    def _tokenize_words(self, text):
+        """对一段"无数字/无拉丁"的纯中文区间做双向最长匹配(FMM/BMM 取更整的那版)。
+        v3.4 从 tokenize 里拆出, 专门服务原子切分后的中间段。"""
+        if not text:
+            return []
+        f = self._fmm(text)
+        b = self._bmm(text)
+        if len(b) != len(f):
+            return b if len(b) < len(f) else f
+        f_single = sum(1 for t in f if len(t) == 1)
+        b_single = sum(1 for t in b if len(t) == 1)
+        return b if b_single < f_single else f
+
     def tokenize(self, text):
         """v2.9 双向最长匹配(BMM): 正/反向各切一遍, 取"词更少、独字更少"的那一版。
 
@@ -3949,17 +3567,23 @@ class Tokenizer:
         就会切出一堆独字; 这些独字进了词表, 逐词采样时自然把句子拼成碎片。
         双向对比能把这类歧义挑出来; 命中词仍全部来自词典、未命中仍是单字+跳过标点,
         所以词表与旧版同构 —— 换来的只是"切得更整齐", 不牵动下游任何打分口径。
+
+        v3.4 升级: 先把「数字+单位 / 小数 / 百分比 / 温度 / 英文(可带数字)」锁成原子,
+        "600 KB" 这类整段成一个 token, 不再拆成 6/0/0/K/B; 中间的中文段仍走双向匹配。
         """
         if not text:
             return []
-        f = self._fmm(text)
-        b = self._bmm(text)
-        if len(b) != len(f):
-            return b if len(b) < len(f) else f
-        # 词数打平 → 选"独字更少"的那版(独字少 = 切得更成词)
-        f_single = sum(1 for t in f if len(t) == 1)
-        b_single = sum(1 for t in b if len(t) == 1)
-        return b if b_single < f_single else f
+        # ① 原子切分: 数字/单位/英文整词整段保留
+        out = []
+        last = 0
+        for m in _ATOMS.finditer(text):
+            if m.start() > last:
+                out.extend(self._tokenize_words(text[last:m.start()]))
+            out.append(m.group(0))       # 原子整段成 token, 不再逐字符拆
+            last = m.end()
+        if last < len(text):
+            out.extend(self._tokenize_words(text[last:]))
+        return out
 
     def tokenize_set(self, text):
         return set(self.tokenize(text))
@@ -4060,8 +3684,10 @@ class EmotionAnalyzer:
                 punct_emo += 0.4
             if ellip >= 2:
                 punct_emo -= 1.0
-            _pe = {}.fromkeys((_[0] if isinstance(_, tuple) and len(_) else _) for _ in DATA.EMOJI_POSITIVE)
-            _ne = {}.fromkeys((_[0] if isinstance(_, tuple) and len(_) else _) for _ in DATA.EMOJI_NEGATIVE)
+            # v1.11 修崩: 原 `{}.fromkeys(...)` 值全是 None, `punct_emo += _v` 直接 TypeError。
+            #   现在按 (emoji, 权重) 组保留真实权重, 用户打个 😊/😭 再也不崩进 except。
+            _pe = {_[0]: _[1] for _ in DATA.EMOJI_POSITIVE if isinstance(_, tuple) and len(_) >= 2}
+            _ne = {_[0]: _[1] for _ in DATA.EMOJI_NEGATIVE if isinstance(_, tuple) and len(_) >= 2}
             _seen_e = set()
             for _ek, _v in list(_pe.items()) + list(_ne.items()):
                 if _ek and _ek in text:
@@ -4652,6 +4278,97 @@ class TaskIntentResolver:
         return q, list(opts)
 
 
+# ============================================================
+# ★v3.10 算术意图识别(与"写法"彻底解耦) —— 一次修一类, 不修一句
+#   病灶: 意图判定的两条正则都写成"数字必须紧贴中文运算符"(如 1234乘以5678),
+#   于是最普通的写法
+#       "1234 乘以 5678 等于多少？"   (数字与"乘以"之间带空格)
+#       "１２３４乘以５６７８"          (全角数字)
+#       "帮我算一下 3 加 5 是多少"     (前面有招呼词)
+#   一律判不出数学 → 掉进联网搜索, 对着算式去搜网页, 回一句
+#   "关键词一个都对不上" —— 牛头不对马嘴。
+#   新做法: 先把中文运算符/全角符号/问候词/问句尾巴全部归一, 再看"剩下的是不是
+#   一个纯算式"。凡是能归成算式的, 无论中间夹多少空格、尾巴怎么问, 都判成数学。
+#   以后再加写法(如"乘上/减去/几多"), 只往归一表里加一行即可, 不必回来打补丁。
+# ============================================================
+_ARITH_OP_CN = ((r"乘以|乘上|乘", "*"), (r"除以|除上|除", "/"),
+                (r"加上|加", "+"), (r"减去|减", "-"))
+_ARITH_FULLWIDTH = (("（", "("), ("）", ")"), ("　", " "), ("✕", "*"), ("·", "*"),
+                    ("×", "*"), ("÷", "/"), ("＋", "+"), ("－", "-"), ("＝", "="), ("％", "%"))
+# 问句尾巴: [=]? 等于/得/是/为? 多少/几/结果/答案 + 语气词 + 标点
+_ARITH_TAIL = re.compile(
+    r"[=＝]?\s*(?:等于|得|是|为|算|求)?\s*(?:多少|几多|几|几何|结果|答案|值)"
+    r"(?:啊|呢|呀|吧|了|的|嘛)?\s*[？?！!。.，,、;；:：~～\s]*$")
+_ARITH_HEAD = re.compile(r"^\s*(?:请问|请|帮我|帮忙|麻烦|给我|帮|我想)\s*")
+_ARITH_HEAD2 = re.compile(r"^\s*(?:计算一下|计算|算一下|算算|算|求值|求|解答|解)\s*")
+_ARITH_FULLWIDTH_DIGIT = str.maketrans("０１２３４５６７８９", "0123456789")
+_ARITH_OK = re.compile(r"^[\d\s.()+\-*/%^]+$")
+
+
+def _arith_intent(raw):
+    """整句归一后仍是一个合法算式 → 是算术题。与空格/全角/招呼语/问句尾巴无关。"""
+    if not isinstance(raw, str) or not raw:
+        return False
+    s = raw.translate(_ARITH_FULLWIDTH_DIGIT)
+    for a, b in _ARITH_FULLWIDTH:
+        s = s.replace(a, b)
+    # 的平方/的立方 → **2/**3 (但"平方根/立方根"留给根号分支, 不在这儿动)
+    s = re.sub(r"(?:的)?\s*平方(?!根)", "**2", s)
+    s = re.sub(r"(?:的)?\s*立方(?!根)", "**3", s)
+    for pat, rep in _ARITH_OP_CN:
+        s = re.sub(pat, rep, s)
+    s = _ARITH_TAIL.sub("", s).strip()
+    for _ in range(3):                      # 剥掉"请问/帮我/算一下"这类前缀(可能叠着来)
+        t = _ARITH_HEAD2.sub("", _ARITH_HEAD.sub("", s)).strip()
+        if t == s:
+            break
+        s = t
+    if not re.search(r"\d", s):             # 必须有数字
+        return False
+    if not re.search(r"[+\-*/%]", s):       # 必须有运算符(纯数字不算)
+        return False
+    return bool(_ARITH_OK.match(s))
+
+
+# ★v3.10 同一类的第二只洞: 中文数字算式("三加五等于多少" / "一百二十三乘以二")
+#   旧版判定表里明明把"一二两三四五六七八九十百千万"当数学信号, 可真正计算时
+#   (_normalize/_ast_value)只认阿拉伯数字 —— 于是"三加五"被判成数学, 却算不出来,
+#   一路掉到别的分支去(既不算数, 也不去联网), 答非所问。
+#   现在把中文数字归一成阿拉伯数字, 还是走"整串是不是纯算式"那把尺子:
+#   只有归一后 100% 是纯算式才替换, 所以"我们一起算一下"里的"一"绝不会被误当 1。
+_CN_D = {"零": 0, "〇": 0, "一": 1, "壹": 1, "二": 2, "两": 2, "三": 3, "叁": 3,
+         "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_U = {"十": 10, "百": 100, "千": 1000}
+_CN_RUN = re.compile(r"[零〇一壹二两叁三四五六七八九十百千]+")
+
+
+def _cn_run_to_int(t):
+    """万以内常见中文数字 → 整数: 三→3 / 十五→15 / 二十→20 / 一百二十三→123 / 三千零五→3005"""
+    if not any(c in _CN_U for c in t):
+        return int("".join(str(_CN_D[c]) for c in t) or "0")   # "一二三" → 123
+    section, num = 0, 0
+    for c in t:
+        if c in _CN_D:
+            num = _CN_D[c]
+        else:
+            section += (num or 1) * _CN_U[c]                   # "十五" 的十 = 1×10
+            num = 0
+    return section + num
+
+
+def _cn_digits(s):
+    """把句子里的中文数字串换成阿拉伯数字(其余原样不动)。"""
+    try:
+        return _CN_RUN.sub(lambda mo: str(_cn_run_to_int(mo.group(0))), s)
+    except Exception:
+        return s
+
+
+def _cn_arith_intent(raw):
+    """中文数字写法的算式: 归一成阿拉伯数字后, 仍必须整串是纯算式才算数。"""
+    return isinstance(raw, str) and bool(raw) and _arith_intent(_cn_digits(raw))
+
+
 class IntentDetector:
     def __init__(self, tokenizer):
         self.tok = tokenizer
@@ -4735,8 +4452,17 @@ class IntentDetector:
         math_score = 0
         if re.search(r"\d\s*[\+\-*/%×÷]\s*\d", raw):
             math_score += 3
-        if re.search(r"[\d一二两三四五六七八九十百千万]+(?:加|减|乘|除|乘以|除以|的平方|的立方|等于多少|等于|求值)", raw):
+        # ★v3.10: \s* 补上 —— 旧版"数字紧贴运算符"才认, "1234 乘 5678" 带空格就漏判
+        if re.search(r"[\d一二两三四五六七八九十百千万]+\s*(?:加|减|乘|除|乘以|除以|的平方|的立方|等于多少|等于|求值)", raw):
             math_score += 2
+        # ★v3.10 根治: 只要能归一成纯算式(随便夹空格/全角/招呼语), 一律强判数学
+        if _arith_intent(raw):
+            math_score += 4
+        # ★v3.10 同一类的第二只洞: 中文数字写法("三加五等于多少"/"一百二十三乘以二"),
+        #   旧判定表把中文数字当数学信号, 可计算端只认阿拉伯数字 → 判成数学却算不出来。
+        #   现在中文数字归一后同样用"整串是不是纯算式"这把尺子, 一样强判数学。
+        if _cn_arith_intent(raw):
+            math_score += 4
         if any(w in raw for w in ["算一下", "计算", "数学题", "求和", "式子", "解惑"]):
             math_score += 1
         if "数学" in raw:
@@ -4877,6 +4603,8 @@ class NgramLM:
         ctx = [self.START] + list(seed_tokens)
         out = list(seed_tokens)
         for _ in range(max_tokens):
+            if _ABORT_TYPING["v"]:      # v2.8 修 P0 取消: /stop 当场停手, 不烧卡算完
+                break
             t1 = ctx[-2] if len(ctx) >= 2 else self.START
             t2 = ctx[-1] if ctx else self.START
             scores = self.predict(t1, t2, bias_tokens)
@@ -4948,13 +4676,57 @@ def _ln_backward(dout, x, gamma):
 #   · int8 常驻量化权重仍负责前向的大头算力, 训练只在 fp32 主权重上做 → 内存不涨
 # ============================================================
 TRAIN_ENABLED = True          # 总开关
-TRAIN_LAST_BLOCKS = 2         # 参与梯度更新的最后 N 个 TransformerBlock 的 FFN 通路
+TRAIN_LAST_BLOCKS = 2         # 参与梯度更新的最后 N 个 FlphaBlock 的 FFN 通路
 TRAIN_LR = 0.0018             # 初始学习率
 TRAIN_CLIP = 1.0              # 逐张量梯度范数裁剪上限(v1.7 稳定训练: 防大梯度把 loss 顶飞)
 TRAIN_STEPS_PER_TURN = 2      # 每轮对话最多几步梯度更新(纯 CPU 也不拖慢)
 TRAIN_MAX_SEQ = 192           # v3.1: 单次训练截断长度 48→192(长问题/长答案不再被砍半句)
 TRAIN_LORA_RANK = 16          # FFN 低秩修正的秩(d_ff×r + d×r, 参数量极小, 内存不涨)
 TRAIN_SAVE_EVERY = 3          # 每 N 轮对话把 fp32 主权重落盘一次(避免每轮写盘拖慢)
+# v2.9 修「训练完出乱码」系统性处理: 可训练适配器(out_adapter 残差 + gate + LoRA)无界漂移
+#   会把 logits 顶崩 → softmax 坍缩 → 正确 token 概率被压到 eps → loss 停在 15~20 不收敛,
+#   且坏掉的适配器会跟随 npz 持久化、跨会话传染(下次启动 load_train_state 又读回毒状态)。
+#   三层修复: ① 每步适配器范数"安全阀"(防爆) ② 加载时检测毒状态并自愈重置(防传染)
+#   ③ 直接清掉盘上已损坏的适配器/损失历史(立即解除乱码)。范数均取"高于初始化量级"的保守值,
+#   作为防失控的阀门而非主动正则, 不会破坏正常拟合; 真正兜底靠自愈重置。
+ADAPTER_ADA_CAP = 12.0        # out_adapter (d×d 残差) 的 Frobenius 范数安全阀(初始化全 0)
+ADAPTER_LORA_CAP = 100.0      # 每个 LoRA 因子 (A/B) 的 Frobenius 范数安全阀(初始化 A≈0.02·√(d_ff·r))
+ADAPTER_GATE_ABS = 6.0        # gate(_ffn_norm) 单维绝对值的安全阀(初始化≈±0.06)
+# v3.4 修「安全阀把已训好的权重当失控削掉」: 上面三个阀是【初始化量级】定的常量, 但真实的
+#   训练会让它们稳步长大 —— 实测 out_adapter 范数 88步=35.6 · 213步=63.1 · 4114步=222.3。
+#   于是任何训过几十步以上的权重一加载, 第一步就被阀削回 12.0(只剩 1/18), 学到的东西当场蒸发。
+#   现在阀值在加载后按【实际拿到的水平 × 余量】自适应: 初始化≈0 时仍是紧阀(防失控照旧生效),
+#   已训过的权重则给足 1.25 倍余量(不再自伤), 真正发散仍会被拦住。
+ADAPTER_CAP_HEADROOM = 1.25   # 自适应安全阀相对"加载态实测值"的余量
+ADAPTER_HARD_MULT = 64.0      # 自适应阀的绝对上限倍率(相对初始常量): 防止"每次加载 ×1.25"被慢慢棘轮推成没阀
+# v3.5 修「训了几千步还是胡言乱语」的真根因: 上面那几个阀只管"存多大", 管不住"使多大"。
+#   final = final + final @ out_adapter 这一跳原本是【无界】的。实测盘上 4114 步的 out_adapter
+#   弗罗贝尼乌斯范数 263.1, 而 12.8M 个元素平均 0.058、最大 0.66 —— 这是一团稠密噪声而不是
+#   学到的结构; 它的谱范数(才是一跳真正的放大倍数)约 9, 也就是把最后一层隐状态整体放大到 10 倍。
+#   乘上输出头后 logits 的 L2 冲到 14000 量级 → softmax 退化成 one-hot → 目标词概率被压到
+#   1e-9, loss 死死钉在 -ln(1e-9)=20.7233 一动不动, 生成侧则是同一个词来回吐。
+#   修法: 按谱范数(幂迭代)算出这一跳的真实增益, 超限就整体等比缩到上限 —— 等比缩放不改变方向,
+#   训练若真学到过东西会原样保留; 但无论 NPZ 里存了多大的范数, 放大倍数都被钉死在上限内。
+ADAPTER_GAIN_MAX = 1.0        # out_adapter 残差这一跳的放大倍数硬上限(谱范数口径; 1.0 = 最多把隐状态翻倍)
+ADAPTER_GAIN_ITERS = 20       # 幂迭代步数: 20 步对 d=3584 已足够把主奇异值估到 1% 以内
+LOSS_HEAL_HI = 12.0           # 绝对地板: 损失均值低于此绝不触发自愈(仅作下限, 不单独判崩)
+LOSS_HEAL_N = 20              # 参与自愈判定的损失尾部点数
+# v3.4 修「健康权重被自愈误杀」: 原判定只看"绝对均值 > 12" —— 但本档位健康训练的
+#   损失本来就常年 15~19(词表 ~6.5e7, 交叉熵地板 ln(V)≈18), 于是【每次加载正常权重都会
+#   被判成中毒 → 当场重设适配器并原地覆盖 NPZ】, 4114 步成果就是这样一次次被抹掉的。
+#   现在改成"相对自身基线 + 整段都坏"两条同时成立才动手:
+#     ① 尾窗均值 > max(12, 自身健康基线 × 1.30)  —— 基线存在 NPZ 的 __base__ 里, 不随毒状态漂移
+#     ② 尾窗里【最健康的一条】也高于基线 5%      —— 健康态总有若干条明显更好的样本, 崩掉才是整段贴上限
+#   再加一道保险: 动手前先把原 NPZ 备份成 <名字>.preheal, 自愈从此不可逆地毁数据成为历史。
+LOSS_HEAL_MARGIN = 1.30       # 相对自身健康基线的劣化倍数(超过才算崩)
+LOSS_HEAL_FLOOR_MAX = 19.0    # 基线本身贴到上限(整段历史都坏) → 基线不可信, 退回保守锚点
+LOSS_HEAL_ANCHOR = 15.0       # 基线不可信时用的保守锚点(× 1.30 = 19.5 才触发)
+HEAL_BACKUP_SUFFIX = ".preheal"   # 自愈覆盖前的不可逆保护副本
+# v1.11 一键极限训练(启动小方训练.bat): 不进聊天, 拿源码语料 + 对话回放拉满 CPU/GPU 训练。
+#   · 训练窗由启动脚本 XF_TRAIN_SEQ 设成 384 —— 每步跨越多句, token 吞吐最高。
+#   · 档位由启动脚本锁成 lite: 内存硬顶 5.0GB, 严格小于"6GB 以下"这条红线。
+TRAIN_ONLY_STEPS_PER_TURN = 2    # 极限模式每个样本连续两步反向传播(比聊天前台 TRAIN_STEPS_PER_TURN 更激进)
+TRAIN_ONLY_LOOP_GAP = 0.0        # 极限模式步间完全不睡、拉满; 想停只能 Ctrl+C / 关窗(全部 daemon 即刻收工)
 TERMINATOR = "</s>"           # v1.7: 统一终止符 —— 训练序列用它分隔"问"与"答", 生成也收在它上
 IGNORE_INDEX = -100           # v3.1: 训练目标里的"不算 loss"哨兵 —— 问题侧 token 全填它(只学答案)
 NEST_TOK = TIER_NEST_TOK       # t6: 每层嵌套思考让 Transformer 自己想的词元数 —— 按档位给
@@ -5034,6 +4806,12 @@ class TrainBank:
         self.steps = 0
         self.last_loss = None
         self.loss_hist = []
+        self.loss_base = 0.0      # v3.4: 本状态"最健康的一段"损失均值 —— 自愈相对判定的基线
+        # v3.4: 运行时安全阀 —— 由 _arm_adapter_caps() 按"实际拿到的水平"设定, 不再用写死的初始化常量。
+        #   未训练(实测≈0)时就是初始常量, 防失控照旧; 加载到训过的权重则自动放宽到实测值 × 余量。
+        self.ada_cap = ADAPTER_ADA_CAP
+        self.lora_cap = ADAPTER_LORA_CAP
+        self.gate_abs = ADAPTER_GATE_ABS
         self.last_gnorm = 0.0
 
     def register(self, name, arr):
@@ -5418,7 +5196,7 @@ class Qint:
         return self
 
 
-def _sinusoid(seq, d_model, offset=0):
+def _phase_carvings(seq, d_model, offset=0):
     # v1.8 Alpha 提速: offset 让"只算新位置"的增量解码也能拿到正确的绝对位置编码
     #   (offset=0 时与旧行为逐元素一致, 整段前向完全不受影响)。
     pe = XP.zeros((seq, d_model), dtype=XP.float32)
@@ -5483,7 +5261,7 @@ class LayerNorm:
         return self.gamma * (x - mean) / XP.sqrt(var + 1e-6) + self.beta
 
 
-class MultiHeadSelfAttention:
+class FocusHeadGate:
     def __init__(self, d_model, n_heads, rng):
         self.d_model = d_model
         self.n_heads = n_heads
@@ -5521,7 +5299,7 @@ class MultiHeadSelfAttention:
         Qh = Q.reshape(seq, self.n_heads, self.d_k).transpose(1, 0, 2)
         Kh = K_all.reshape(tot, self.n_heads, self.d_k).transpose(1, 0, 2)
         Vh = V_all.reshape(tot, self.n_heads, self.d_k).transpose(1, 0, 2)
-        scores = Qh @ Kh.transpose(0, 2, 1) / XP.sqrt(self.d_k)
+        scores = (Qh * (1.0 / XP.sqrt(self.d_k))) @ Kh.transpose(0, 2, 1)
         if tot > 1:
             # 因果掩码: 这次新来的 seq 个位置落在整条序列的"末尾", 起点 = tot - seq。
             #   第 j 个新位置只能看 0 .. (tot-seq+j) 这些列, 也就是 triu 的对角线偏移 1+(tot-seq)。
@@ -5596,7 +5374,7 @@ class DeepIntentScorer:
         Kt = K.reshape(seq, self.pool_heads, self.d_k).transpose(1, 0, 2)
         Vh = V.reshape(seq, self.pool_heads, self.d_k).transpose(1, 0, 2)
         qh = q_head.reshape(1, self.pool_heads, self.d_k).transpose(1, 0, 2)
-        a = qh @ Kt.transpose(0, 2, 1) / XP.sqrt(float(self.d_k))   # (heads,1,seq)
+        a = (qh * (1.0 / XP.sqrt(float(self.d_k)))) @ Kt.transpose(0, 2, 1)   # (heads,1,seq)
         a = _softmax(a, -1)
         ctx = (a @ Vh)                                                 # (heads,1,d_k)
         ctx = ctx.transpose(1, 0, 2).reshape(1, d)                     # (1,d)
@@ -5631,10 +5409,10 @@ class DeepIntentScorer:
         return int(n)
 
 
-class TransformerBlock:
+class FlphaBlock:
     def __init__(self, d_model, d_ff, n_heads, rng):
         self.norm1 = LayerNorm(d_model)
-        self.attn = MultiHeadSelfAttention(d_model, n_heads, rng)
+        self.attn = FocusHeadGate(d_model, n_heads, rng)
         self.norm2 = LayerNorm(d_model)
         self.W1 = _WQ(rng, (d_model, d_ff))
         self.b1 = XP.zeros(d_ff, dtype=XP.float32)
@@ -5652,7 +5430,7 @@ class TransformerBlock:
         return x, attn
 
 
-class DeepThinkTransformer:
+class FlphaCore:
     def __init__(self, vocab_list, d_model=MODEL_D, n_layers=MODEL_LAYERS, n_heads=MODEL_HEADS,
                  ngram_lm=None, ffn_ratio=MODEL_FFN, tie_out=MODEL_TIE, seed=42):
         self.vocab = list(vocab_list)
@@ -5685,7 +5463,7 @@ class DeepThinkTransformer:
         self.blocks = []
         for _li in range(n_layers):
             _br.tick(_li + 1, n_layers, "构建 Transformer 层 {}/{}".format(_li + 1, n_layers))
-            self.blocks.append(TransformerBlock(d_model, d_model * ffn_ratio, n_heads, rng))
+            self.blocks.append(FlphaBlock(d_model, d_model * ffn_ratio, n_heads, rng))
         # 层全建完, 后面还有"搬上显卡 + 权重落盘"一段长活 —— 换个说法继续转, 别让它看着像卡住
         _br.leave("收尾：权重搬上显卡 + 落盘缓存" if _cold else "收尾：权重搬上显卡")
         self._ffn_norm = rng.normal(0, 0.02, (d_model,))
@@ -5755,6 +5533,9 @@ class DeepThinkTransformer:
                                     "B": _to_dev(self.ffn_lr[_li]["B"])}
         self.bank.register("gate", self._ffn_norm)
         self.bank.register("out_adapter", self.out_adapter)
+        # v3.5: out_adapter 残差这一跳的"放大倍数"缓存(None = 还没算过, 用的时候惰性算一次)。
+        #   训练/自愈/加载只要动过 out_adapter 的数值, 就把它清回 None 让它重算。
+        self._ada_gain = None
         for _li in self.train_layers:
             self.bank.register("ffnA{}".format(_li), self.ffn_lr[_li]["A"])
             self.bank.register("ffnB{}".format(_li), self.ffn_lr[_li]["B"])
@@ -5787,9 +5568,9 @@ class DeepThinkTransformer:
         #   只为了 gather 出 seq 行(192 行只有 2.75MB)。按行还原与整块还原数值逐元素一致。
         ef = _wc_get(self.embed) if hasattr(self.embed, "_f32") else None
         if ef is not None:
-            x = ef[ids] + _sinusoid(seq, self.d_model)
+            x = ef[ids] + _phase_carvings(seq, self.d_model)
         else:
-            x = _qint_rows(self.embed, ids) + _sinusoid(seq, self.d_model)
+            x = _qint_rows(self.embed, ids) + _phase_carvings(seq, self.d_model)
         cache = {"seq": seq, "layers": {}}
         for i, blk in enumerate(self.blocks):
             _beat()          # v1.8 Alpha: 训练前向每过一层也打真心跳(学习期同样不会"看着像卡住")
@@ -5825,8 +5606,12 @@ class DeepThinkTransformer:
         seq = x.shape[0]
         # —— 输出头(可训练 gate + 残差适配器) ——
         final_all = x * (1.0 + 0.02 * self._ffn_norm)          # (seq, d)
+        # v3.6: 末位 RMSNorm —— 训练时的前向必须和推理时一模一样, 否则 loss 反映的
+        #   不是真正在跑的那条通路, 梯度也就指错方向。归一化后与 rms 都留一份, 反向要用。
+        final_all, _rms_f = self._final_norm(final_all)
         Ada = self.out_adapter
-        z = final_all + final_all @ Ada                        # 残差式适配
+        _s = self._ada_scale()          # v3.5: 训练与推理由同一道增益闸把关, 保证 loss 反映真实前向
+        z = final_all + _s * (final_all @ Ada)                 # 残差式适配
         Wout = self.embed.val().T                              # 输出↔输入共享(冻结)
         logits = z @ Wout + self.b_out                         # (seq, V)
         probs = _softmax(logits, -1)
@@ -5847,13 +5632,19 @@ class DeepThinkTransformer:
         p_t = XP.clip(probs[rows, safe_tgt], eps, 1.0)
         loss = float(-(XP.log(p_t) * valid).sum() / n_valid)
         # —— 反向: dL/dlogits = (probs - onehot) ⊙ mask / 有效位置数 ——
-        dlogits = probs
+        # P0-2: 必须拷贝, 不能引用 —— probs 是 softmax 输出, 后面(add/调试/复现)还要用原分布
+        dlogits = probs.copy()
         dlogits[rows, safe_tgt] -= 1.0
         dlogits *= valid.reshape(-1, 1)
         dlogits /= n_valid
         dz = dlogits @ Wout.T                                  # (seq, d)
-        dAda = final_all.T @ dz                                # (d, d)
-        dfinal = dz + dz @ Ada.T
+        # v3.5: 缩放系数当常数(不对它求导), 梯度按同一 _s 同步回传, 否则学的方向与用的前向不一致
+        dAda = _s * (final_all.T @ dz)                         # (d, d)
+        dfinal = dz + _s * (dz @ Ada.T)
+        # v3.6: 上面拿到的还是"归一化之后"的梯度, 必须再穿过末位 RMSNorm 换算回归一化前,
+        #   否则 dgate / dx 全都指错方向(归一化那一步的 Jacobian 被整块漏掉了)。
+        #   注意 final_all 此刻已经是归一化后的张量 u, 直接当 u 用。
+        dfinal = self._final_norm_backward(dfinal, final_all, _rms_f)
         dgate = 0.02 * XP.sum(x * dfinal, axis=0)              # (d,)
         dx = dfinal * (1.0 + 0.02 * self._ffn_norm)            # (seq, d)
         grads = {"out_adapter": dAda, "gate": dgate}
@@ -5884,6 +5675,7 @@ class DeepThinkTransformer:
             if TRAIN_CLIP > 0 and gn > TRAIN_CLIP:          # v1.7: 梯度裁剪, 训练更稳
                 g = g * (TRAIN_CLIP / (gn + 1e-9))
             self.bank.opt.step(arr, g)
+        self._cap_adapter_norms()          # v2.9 适配器范数安全阀: 防残差 LoRA/Ada 无界放大压崩 logits
         gnorm = float(np.sqrt(gnorm))
         self.bank.steps += 1
         self.bank.last_loss = loss
@@ -5891,8 +5683,256 @@ class DeepThinkTransformer:
         self.bank.loss_hist.append(round(loss, 4))
         if len(self.bank.loss_hist) > 200:
             self.bank.loss_hist = self.bank.loss_hist[-200:]
+        # v3.4: 维护"健康基线"—— 记录本状态达到过的最好水平(尾窗均值的最小值),
+        #   随 NPZ 一起落盘, 供下次加载做相对判定; 只降不升, 不会被后来的毒状态污染。
+        try:
+            _w = self.bank.loss_hist[-LOSS_HEAL_N:]
+            if len(_w) >= LOSS_HEAL_N:
+                _m = float(sum(_w)) / len(_w)
+                if self.bank.loss_base <= 0.0 or _m < self.bank.loss_base:
+                    self.bank.loss_base = _m
+        except Exception:
+            pass
         self.train_steps_total += 1
         return {"loss": loss, "gnorm": gnorm, "steps": self.bank.steps}
+
+    def _arm_adapter_caps(self):
+        """v3.4 按【实际拿到的水平】给安全阀定阈值 —— 修「阀把已训好的权重当失控削掉」。
+
+        旧版三个阀是按初始化量级写死的常量(out_adapter=12.0 / LoRA=100.0 / gate=6.0),
+        但真实训练会让它们稳步长大 —— 实测 out_adapter 范数 88步=35.6 · 213步=63.1 · 4114步=222.3。
+        于是任何训过几十步的权重一加载, 第一步就被阀削回 12.0(只剩 1/18), 学到的东西当场蒸发。
+        改成: 阈值 = clamp(实测值 × ADAPTER_CAP_HEADROOM, 初始常量, 初始常量 × ADAPTER_HARD_MULT)。
+        未训过的权重(实测≈初始量级)仍拿紧阀, 防失控照旧生效; 已训过的给足余量, 不再自伤。
+        """
+        try:
+            ada_meas = 0.0
+            lora_meas = 0.0
+            gate_meas = 0.0
+            for name, arr in self.bank.params:
+                if name == "out_adapter":
+                    ada_meas = max(ada_meas, float(XP.sqrt(XP.sum(arr * arr))))
+                elif name.startswith("ffnA") or name.startswith("ffnB"):
+                    lora_meas = max(lora_meas, float(XP.sqrt(XP.sum(arr * arr))))
+                elif name == "gate":
+                    gate_meas = max(gate_meas, float(XP.max(XP.abs(arr))))
+            self.bank.ada_cap = min(max(ADAPTER_ADA_CAP, ada_meas * ADAPTER_CAP_HEADROOM),
+                                    ADAPTER_ADA_CAP * ADAPTER_HARD_MULT)
+            self.bank.lora_cap = min(max(ADAPTER_LORA_CAP, lora_meas * ADAPTER_CAP_HEADROOM),
+                                     ADAPTER_LORA_CAP * ADAPTER_HARD_MULT)
+            self.bank.gate_abs = min(max(ADAPTER_GATE_ABS, gate_meas * ADAPTER_CAP_HEADROOM),
+                                     ADAPTER_GATE_ABS * ADAPTER_HARD_MULT)
+            if ada_meas > ADAPTER_ADA_CAP:
+                sys.stderr.write("\n[v3.4 安全阀] 按加载态自适应: out_adapter {:.3f} → 阀值 {:.3f}"
+                                 "(旧版会被削成 {:.1f})".format(ada_meas, self.bank.ada_cap, ADAPTER_ADA_CAP))
+            return self.bank.ada_cap, self.bank.lora_cap, self.bank.gate_abs
+        except Exception:
+            self.bank.ada_cap = ADAPTER_ADA_CAP
+            self.bank.lora_cap = ADAPTER_LORA_CAP
+            self.bank.gate_abs = ADAPTER_GATE_ABS
+            return ADAPTER_ADA_CAP, ADAPTER_LORA_CAP, ADAPTER_GATE_ABS
+
+    def _ada_scale(self):
+        """v3.5: 算出 out_adapter 残差这一跳当前该乘的"安全增益"。
+
+        前向里是按 final + final @ out_adapter 全额施加的, 但真正决定"放大了多少倍"的并不是
+        弗罗贝尼乌斯范数(那是全部元素平方和开根 —— 12.8M 个各自很小的元素也能把它堆到几百),
+        而是谱范数 σ(最大奇异值)。盘上这一份 σ≈9, 意味着这一跳把隐状态整体放大到 10 倍,
+        logits 随之冲到 1e4 量级, softmax 退化成 one-hot, loss 钉死在上限。
+
+        这里用幂迭代把 σ 估出来, 只在 σ > ADAPTER_GAIN_MAX 时给一个 <1 的等比缩放系数。
+        等比缩放只改幅度不改方向 —— 训练真学到的东西完整保留, 但无论 NPZ 里被灌进多大的
+        范数, 这一跳的放大倍数都封顶。算一次就缓存, 数值没被动过就不重算(省下 20 次 3584² 乘)。
+        """
+        _g = getattr(self, "_ada_gain", None)
+        if _g is not None:
+            return _g
+        try:
+            A = getattr(self, "out_adapter", None)
+            if A is None:
+                self._ada_gain = 1.0
+                return 1.0
+            _d = int(A.shape[0])
+            # 迭代向量取"全 1 归一化": 对一团稠密噪声矩阵, 它与真正的主奇异向量几乎不可能正交,
+            # 幂迭代因此能稳定收敛到主奇异值。
+            # v3.6 修正: 直接在 A 上迭代只会收敛到 |λmax| —— A 不对称时 |λmax| ≤ σmax,
+            #   实测这条把 σ 低估了(报 6.57, 实际这一跳放大到 2.39× 而不是封顶的 2.00×)。
+            #   改成在 AᵀA 上迭代: AᵀA 对称半正定, 主特征值开根就是货真价实的 σmax。
+            v = XP.ones((_d,), dtype=XP.float32)
+            v = v / float(XP.sqrt(XP.sum(v * v)))
+            for _ in range(int(ADAPTER_GAIN_ITERS)):
+                w = A @ v                  # → 主右奇异向量方向
+                _n = float(XP.sqrt(XP.sum(w * w)))
+                if not (_n > 0.0):
+                    self._ada_gain = 1.0
+                    return 1.0
+                w = w / _n
+                u = A.T @ w                # 折回 AᵀA·v, 保证收敛到的是 σ 而不是 |λ|
+                _n2 = float(XP.sqrt(XP.sum(u * u)))
+                if not (_n2 > 0.0):
+                    self._ada_gain = 1.0
+                    return 1.0
+                v = u / _n2
+            w = A @ v                     # 最后再乘一次: ‖A·v‖ 就是 σmax 的估计
+            sigma = float(XP.sqrt(XP.sum(w * w)))
+            if not (sigma > ADAPTER_GAIN_MAX):
+                self._ada_gain = 1.0
+                return 1.0
+            _s = float(ADAPTER_GAIN_MAX) / (sigma + 1e-9)
+            self._ada_gain = _s
+            # v3.8.1: 这段诊断只在第一次超限时提示一次, 之后全程静默。
+            # 谱范数保护(上面那行等比缩放)始终生效; 之前每次都 sys.stderr.write
+            # 导致 CLI 一旦触发就疯狂刷屏, 把正常对话打印淹没。
+            if not getattr(self, "_ada_gain_warned", False):
+                self._ada_gain_warned = True
+                sys.stderr.write(
+                    "\n[v3.5 残差增益] out_adapter 谱范数 {:.2f} 超限 → 这一跳等比缩到 {:.4f}: "
+                    "放大 {:.2f}× → {:.2f}×(方向不变, 只是不再顶崩 logits)。".format(
+                        sigma, _s, 1.0 + sigma, 1.0 + sigma * _s))
+            return _s
+        except Exception:
+            self._ada_gain = 1.0
+            return 1.0
+
+    def _final_norm(self, f):
+        """v3.6: 末位 RMSNorm —— 返回 (归一化后的张量, 该位置算出的 rms)。
+
+        为什么非有这一跳不可: 全模型 15 层每一跳都带归一化, 唯独"最后一跳"是裸的 ——
+        深层表征没被拉回单位尺度, 就直接送进输出投影。实测这一跳的数字是这样的:
+        末层 hidden 的 L2 = 294.5(3584 维, per-dim RMS ≈ 4.92) → 过 gate 与 out_adapter
+        之后 out_norm = 704.9(per-dim RMS ≈ 11.77) → logits 的 L2 = 2013.6(RMS ≈ 17.29),
+        而输出权重每行范数只有 1.196。也就是说最大 logit 高出均值 70 多倍, softmax 直接
+        退化成 one-hot, 目标词概率掉到 1e-9 以下被 clip, loss 于是长期钉在
+        -ln(1e-9)=20.7233 这个"废步天花板"上(ln V 才 9.515, 顶格绝不是"题难", 就是塌了)。
+
+        归一化之后, logits 的尺度只由权重本身的尺度决定, 不再随隐状态漂移 ——
+        这才是"能学"的前提。约定 f 最后一维是特征维: 对 (seq,d) 逐位置归一,
+        对 (d,) 整体归一, 两种形状同一份实现, 保证整段前向与增量解码完全同口径。
+        """
+        _rms = XP.sqrt(XP.mean(f * f, axis=-1, keepdims=True) + 1e-6)
+        return f / _rms, _rms
+
+    def _final_norm_backward(self, du, u, rms):
+        """RMSNorm 的反向: du(归一化后的梯度) → 归一化前的梯度。
+
+        u = f / rms, 而 rms 本身也由 f 定, 所以
+            df = (du - u · mean(du ⊙ u)) / rms
+        这是 RMSNorm 无增益版本的标准 Jacobian 回传, 少了这一项梯度方向就是错的。
+        """
+        return (du - u * XP.mean(du * u, axis=-1, keepdims=True)) / rms
+
+    def _cap_adapter_norms(self):
+        """v2.9 适配器范数安全阀: 每步把可训练适配器约束在安全区间内。
+
+        out_adapter(d×d残差) 与 LoRA 因子一旦无界放大, 会把冻结 logits 顶崩 → softmax 坍缩
+        → 正确 token 概率被压到 eps、loss 暴起不收敛, 生成也被同一通路污染成乱码。
+        这里只做"超限拉回"的阀门, 不改变恰好在阀内的正常拟合。
+
+        v3.4: 阀值改用运行时自适应值(self.bank.ada_cap / lora_cap / gate_abs), 不再写死 —— 见
+        _arm_adapter_caps()。否则恢复回来的 4114 步 out_adapter(222.3)每加载一次就被削成 12.0。
+        v3.5: 这里按弗罗贝尼乌斯范数削, 只能挡住"总量爆掉", 挡不住"总量没爆但增益爆掉"
+        (12.8M 个 0.06 的小元素就能凑出几百的弗罗贝尼乌斯范数、谱范数却已经 9)。真正的
+        兜底是前向那一跳的 _ada_scale(); 这里只负责训练期不让数值无限漂。"""
+        _da = float(getattr(self.bank, "ada_cap", ADAPTER_ADA_CAP) or ADAPTER_ADA_CAP)
+        _dl = float(getattr(self.bank, "lora_cap", ADAPTER_LORA_CAP) or ADAPTER_LORA_CAP)
+        _dg = float(getattr(self.bank, "gate_abs", ADAPTER_GATE_ABS) or ADAPTER_GATE_ABS)
+        for name, arr in self.bank.params:
+            try:
+                if name == "out_adapter":
+                    norm = float(XP.sqrt(XP.sum(arr * arr)))
+                    if norm > _da:
+                        arr *= _da / (norm + 1e-9)
+                    # v3.5: 每个训练步都会走到这里, 而 out_adapter 每步都在变 —— 无论有没有被削,
+                    #   都让增益缓存作废, 保证 _ada_scale() 永远用当前矩阵的真实谱范数判定。
+                    self._ada_gain = None
+                elif name.startswith("ffnA") or name.startswith("ffnB"):
+                    norm = float(XP.sqrt(XP.sum(arr * arr)))
+                    if norm > _dl:
+                        arr *= _dl / (norm + 1e-9)
+                elif name == "gate":
+                    if _dg > 0:
+                        XP.clip(arr, -_dg, _dg, out=arr)
+            except Exception:
+                pass
+
+    def _reset_adapter_state(self, why):
+        """v2.9 自愈: 把可训练适配器重设回安全初值, 并清空优化器动量与损失历史。"""
+        try:
+            for name, arr in self.bank.params:
+                if name == "gate":
+                    _r = np.asarray(np.random.normal(0.0, 0.02, arr.shape), dtype=np.float32)
+                    arr[...] = _to_dev(XP.asarray(_r, dtype=XP.float32))
+                elif name == "out_adapter":
+                    arr[...] = _to_dev(XP.zeros(arr.shape, dtype=XP.float32))
+                elif name.startswith("ffnA"):
+                    _r = np.asarray(np.random.normal(0.0, 0.02, arr.shape), dtype=np.float32)
+                    arr[...] = _to_dev(XP.asarray(_r, dtype=XP.float32))
+                else:
+                    arr[...] = _to_dev(XP.zeros(arr.shape, dtype=XP.float32))
+            self.bank.opt.m = {}
+            self.bank.opt.v = {}
+            self.bank.opt.t = 0
+            # v3.5: out_adapter 刚被清零 → 谱范数增益缓存作废(否则会沿用旧的缩放系数)
+            self._ada_gain = None
+            self.bank.loss_hist = []
+            self.bank.last_loss = None
+            self.train_loss_hist = []
+            # v3.4: 权重已回到初始化量级 → 安全阀同步收回紧档(防失控立刻恢复生效),
+            #   旧的健康基线也随之作废(权重都换了, 基线不再代表这个状态), 交给后续训练重新建立。
+            self.bank.loss_base = 0.0
+            self._arm_adapter_caps()
+            sys.stderr.write("\n[v2.9 自愈] {} → 已把损坏的适配器重设回安全初值(输出恢复基础模型的正常中文)。".format(why))
+        except Exception:
+            pass
+
+    def _heal_poisoned_state(self):
+        """v3.4 加载后自检: 只有"相对自身健康基线明显劣化"且"整段都坏"才判定适配器已崩。
+
+        判据(两条必须同时成立):
+          ① 尾窗均值 > max(LOSS_HEAL_HI, 基线 × LOSS_HEAL_MARGIN)
+          ② 尾窗内最健康的一条也 > 基线 × 1.05  —— 健康态必然夹杂若干条明显更好的样本,
+             适配器崩掉才是整段贴着 loss 上限(概率被压到 eps, ln(1e9)≈20.72)。
+        并且动手前先把原 NPZ 备份成 <名字>.preheal, 自愈不再可能不可逆地毁掉训练成果。
+        基线取自 NPZ 的 __base__(只降不升), 缺失时用历史低分位稳健估计, 整段贴上限则退回保守锚点。
+        """
+        try:
+            hist = [float(v) for v in (self.bank.loss_hist or [])]
+            if len(hist) < min(LOSS_HEAL_N, 8):
+                return False
+            recent = hist[-LOSS_HEAL_N:]
+            rmean = float(sum(recent)) / len(recent)
+
+            base = float(getattr(self.bank, "loss_base", 0.0) or 0.0)
+            if base <= 0.0:
+                # 没有基线记录: 用历史低分位当"最健康水平"的稳健估计
+                s = sorted(hist)
+                base = s[max(0, int(len(s) * 0.2) - 1)]
+                if base > LOSS_HEAL_FLOOR_MAX:
+                    base = LOSS_HEAL_ANCHOR      # 整段都贴着上限 → 基线不可信
+                self.bank.loss_base = base
+
+            thr = max(LOSS_HEAL_HI, base * LOSS_HEAL_MARGIN)
+            if rmean < thr:
+                return False                          # ① 相对基线没劣化 → 健康, 绝不误杀
+            if min(recent) <= base * 1.05:
+                return False                          # ② 尾窗里还有明显正常的样本 → 是噪声, 不是崩
+            if self.bank.loss_base > 0 and base > LOSS_HEAL_FLOOR_MAX:
+                return False                          # 基线本身贴上限, 判据不可靠 → 宁可不动作
+
+            # —— 确判: 先留下不可逆保护副本, 再重置 ——
+            try:
+                import shutil as _sh
+                _p = self._train_path()
+                if os.path.exists(_p):
+                    _sh.copyfile(_p, _p + HEAL_BACKUP_SUFFIX)
+            except Exception:
+                pass
+            self._reset_adapter_state("最近 {} 步损失均值 ≈ {:.1f} > 基线 {:.1f}×{:.2f}={:.1f}".format(
+                len(recent), rmean, base, LOSS_HEAL_MARGIN, thr))
+            self.dump_train_state()
+            return True
+        except Exception:
+            return False
 
     def train_stats(self):
         st = self.bank.stats() if self.bank else {}
@@ -5900,32 +5940,117 @@ class DeepThinkTransformer:
         st["hist"] = self.bank.loss_hist[-8:] if self.bank else []
         return st
 
+    def release_f32_cache(self):
+        """v1.11 修_误: 真正把「冻结权重的 fp32 常驻镜像」腾出去, 而不是只把 _WC_USED
+        账本清零。遍历本网络里所有量化为 Qint 的大权重块, 把各自挂着的 ._f32 丢掉;
+        gc 之后这些镜像被真正回收, 内存才会真的压回红线内(配合 _mem_guard 在越线时调用)。
+        重新用到时 _wc_get 会自动按新后端重建镜像, 所以丢得安全。"""
+        _dropped = 0
+        def _drop(o):
+            nonlocal _dropped
+            if o is not None and getattr(o, "_f32", None) is not None:
+                o._f32 = None
+                _dropped += 1
+        _drop(self.embed)
+        _drop(self.W_out)
+        if getattr(self, "intent_scorer", None) is not None:
+            _s = self.intent_scorer
+            _drop(_s.Wq); _drop(_s.Wk); _drop(_s.Wv); _drop(_s.Wo); _drop(_s._proj)
+            for _r in getattr(_s, "refine", []) or []:
+                _drop(_r.get("W1")); _drop(_r.get("W2"))
+        for _b in getattr(self, "blocks", []) or []:
+            _a = _b.attn
+            _drop(_a.Wq); _drop(_a.Wk); _drop(_a.Wv); _drop(_a.Wo)
+            _drop(_b.W1); _drop(_b.W2)
+        _WC_USED[0] = 0
+        try:
+            import gc as _gc
+            _gc.collect()
+        except Exception:
+            pass
+        return _dropped
+
     def _train_path(self):
         return "xiaofang_train_covi1_{}.npz".format(XF_TIER)
 
     def dump_train_state(self):
-        """v1.8 Alpha: 把训练成果(主权重)落盘, 下次启动接着学 —— 越用越准。"""
+        """v1.8 Alpha: 把训练成果(主权重)落盘, 下次启动接着学 —— 越用越准。
+        v3.3: 对话回放缓冲一并写进【同一个】NPZ —— 全程只碰一个 NPZ, 满足"只放一个"要求。"""
         if not self.bank:
             return False
         try:
-            payload = {"__meta__": np.asarray([self.bank.steps, len(self.bank.loss_hist)],
-                                              dtype=np.float64)}
-            for name, arr in self.bank.params:
-                payload[name] = _to_host(arr)
-            payload["__loss__"] = np.asarray(self.bank.loss_hist[-64:] or [0.0], dtype=np.float64)
-            np.savez_compressed(self._train_path(), **payload)
+            # v3.3: 写盘全走同一把锁 —— 前台/后台/退出三处绝不同时写同一个 NPZ
+            with _TRAIN_LOCK:
+                payload = {"__meta__": np.asarray([self.bank.steps, len(self.bank.loss_hist)],
+                                                  dtype=np.float64)}
+                for name, arr in self.bank.params:
+                    payload[name] = _to_host(arr)
+                payload["__loss__"] = np.asarray(self.bank.loss_hist[-64:] or [0.0], dtype=np.float64)
+                # v3.4: 健康基线随权重一起落盘 —— 自愈的相对判定靠它, 不再依赖易漂的绝对阈值
+                payload["__base__"] = np.asarray([float(getattr(self.bank, "loss_base", 0.0) or 0.0)],
+                                                 dtype=np.float64)
+                # v3.3: 把内存里的回放对话跟随主权重一起落盘(同一 NPZ)
+                r = _REPLAY
+                with r["lock"]:
+                    payload["__replay_in"] = np.asarray(r["in"], dtype="<U")
+                    payload["__replay_out"] = np.asarray(r["out"], dtype="<U")
+                # v3.5 修_丢数据: 原来是 np.savez_compressed(目标文件) 直接就地覆盖写。
+                #   48MB 压缩要写好一会儿, 这段时间里磁盘上那份 NPZ 是一截"半拉 zip";
+                #   只要有人在这几秒内读它(启动加载 / 并发保存), 或者进程被强杀
+                #   (关窗即关 AI / 训练窗口被关), 训练成果当场报废 —— 数据反复丢就是死在这。
+                #   改成先写同目录 .tmp, 再整份原子顶替: 任何时刻目标文件要么是旧的完整版、
+                #   要么是新的完整版, 不存在"半截"这个中间态。
+                dst = self._train_path()
+                tmp = dst + ".tmp"
+                with open(tmp, "wb") as _f:
+                    np.savez_compressed(_f, **payload)
+                if os.path.exists(dst):
+                    try:
+                        import shutil as _sh
+                        _sh.copyfile(dst, dst + ".bak")   # 留住上一版完整档, 新版本身出问题还能倒回来
+                    except Exception:
+                        pass
+                os.replace(tmp, dst)                     # 原子替换, 崩溃也只会留下完整旧版
             return True
         except Exception:
             return False
 
+    def _train_candidates(self, p):
+        """v3.5: 主文件优先, 读不出来(写坏/半截)就按新到旧退回备份 —— 训练成果不再"一次即毁"。"""
+        c = [p, p + ".bak", p + ".preheal"]
+        try:
+            import glob as _glob
+            c += sorted(_glob.glob(p + ".good_*"), reverse=True)
+            c += sorted(_glob.glob(p + ".bak_*"), reverse=True)
+        except Exception:
+            pass
+        return c
+
     def load_train_state(self):
-        """v1.8 Alpha: 启动时续上历史训练权重(有则加载, 无则用随机初始化)。"""
+        """v1.8 Alpha: 启动时续上历史训练权重(有则加载, 无则用随机初始化)。
+
+        v3.5 修_丢数据: 主文件可能是被强杀写坏的半截 zip。以前这里一读就抛异常,
+        异常被 except 整个吞掉直接返回 0 —— 于是"静默地从随机权重重新开始",
+        用户那边看到的就是训练数据又一次全丢。现在改成逐个候选试读, 哪个读通用哪个。
+        """
         try:
             import os as _os
             p = self._train_path()
-            if not _os.path.exists(p):
+            z = None
+            for cand in self._train_candidates(p):
+                if not _os.path.exists(cand):
+                    continue
+                try:
+                    z = np.load(cand, allow_pickle=False)
+                except Exception:
+                    z = None
+                    continue
+                if cand != p:
+                    sys.stderr.write("\n[v3.5 恢复] 主训练文件读不出来, 已自动改读备份: "
+                                     + os.path.basename(cand))
+                break
+            if z is None:
                 return 0
-            z = np.load(p, allow_pickle=False)
             got = 0
             for name, arr in self.bank.params:
                 if name in z and tuple(z[name].shape) == tuple(arr.shape):
@@ -5937,11 +6062,35 @@ class DeepThinkTransformer:
             if "__meta__" in z:
                 self.bank.steps = int(z["__meta__"][0])
                 self.train_steps_total = self.bank.steps
+            if "__base__" in z.files:
+                try:
+                    self.bank.loss_base = float(np.asarray(z["__base__"]).ravel()[0])
+                except Exception:
+                    self.bank.loss_base = 0.0
             if "__loss__" in z:
                 self.bank.loss_hist = [float(v) for v in z["__loss__"]]
                 if self.bank.loss_hist:
                     self.bank.last_loss = self.bank.loss_hist[-1]
+            # v3.3: 读回上一轮攒下的对话回放(同一 NPZ), 让后台温习跨会话延续
+            try:
+                ri = list(z["__replay_in"]) if "__replay_in" in z.files else []
+                ro = list(z["__replay_out"]) if "__replay_out" in z.files else []
+                if ri and ro and len(ri) == len(ro):
+                    r = _REPLAY
+                    with r["lock"]:
+                        r["in"] = [str(x)[-_REPLAY_MAX_CHARS:] for x in ri][-_REPLAY_CAP:]
+                        r["out"] = [str(x)[-_REPLAY_MAX_CHARS:] for x in ro][-_REPLAY_CAP:]
+                        r["idx"] = 0
+                        r["n"] += len(r["in"])
+            except Exception:
+                pass
             self.train_loaded = got
+            # v3.5: 刚从 NPZ 填进来的 out_adapter 数值变了 → 增益缓存作废, 首次前向按新谱范数重算
+            self._ada_gain = None
+            # v3.4: 关键顺序 —— 先把安全阀按"这次实际加载到的水平"放宽, 再跑自愈检测。
+            #   否则 4114 步的 out_adapter(222.3) 会在训第一步时就被写死的 12.0 阀削掉 94%。
+            self._arm_adapter_caps()
+            self._heal_poisoned_state()   # v2.9 自愈: 检测到历史损失异常偏高 → 重置毒适配器并回写干净 NPZ
             return got
         except Exception:
             return 0
@@ -5952,7 +6101,7 @@ class DeepThinkTransformer:
         seq = len(token_ids)
         # v1.8 Alpha 提速: 词嵌入常驻 int8, 只把"这一句真正用到的几行"还原成 fp32。
         #   整表还原是 12797×3584 ≈ 183MB 的无谓搬运, 现在按需取行, 省下整趟拷贝。
-        x = _qint_rows(self.embed, token_ids) + _sinusoid(seq, self.d_model)
+        x = _qint_rows(self.embed, token_ids) + _phase_carvings(seq, self.d_model)
         blocks = []
         attn_last = None
         if trace:
@@ -5983,8 +6132,11 @@ class DeepThinkTransformer:
                     "peaks": [round(float(p), 3) for p in _pks[i]]})
         # 深度权重细化: 学习到的逐元素深度门控, 对深层表征做 1+ε 尺度调制
         final = x[-1] * (1.0 + 0.02 * self._ffn_norm)
+        final, _ = self._final_norm(final)     # v3.6: 末位归一化, 详见 _final_norm 的注释
         if getattr(self, "out_adapter", None) is not None:
-            final = final + final @ self.out_adapter   # v1.7: 可训练残差适配器(训练后就生效)
+            # v1.7: 可训练残差适配器(训练后就生效)
+            # v3.5: 这一跳原本无界 —— 增益按谱范数封顶, 防 logits 被顶到 1e4 把 softmax 压成 one-hot
+            final = final + self._ada_scale() * (final @ self.out_adapter)
         if self.tie_out:
             # v1.8 Alpha 提速: 共享输出权重直接走"分块反量化 + 转置乘", 不再铺 183MB fp32
             logits = _dq_mm_t(self.embed, final) + self.b_out
@@ -6185,7 +6337,7 @@ class DeepThinkTransformer:
         if len(token_ids) == 0:
             token_ids = [0]
         seq = len(token_ids)
-        x = _qint_rows(self.embed, token_ids) + _sinusoid(seq, self.d_model, offset=pos0)
+        x = _qint_rows(self.embed, token_ids) + _phase_carvings(seq, self.d_model, offset=pos0)
         _rows = [] if trace_collect is not None else None
         for i, blk in enumerate(self.blocks):
             if caches[i] is None:
@@ -6200,8 +6352,10 @@ class DeepThinkTransformer:
             UI_ST["layer"] = i + 1
             _beat()
         final = x[-1] * (1.0 + 0.02 * self._ffn_norm)
+        final, _ = self._final_norm(final)     # v3.6: 与整段前向同一道末位归一化
         if getattr(self, "out_adapter", None) is not None:
-            final = final + final @ self.out_adapter
+            # v3.5: 增量解码与整段前向必须同口径, 否则续写和首答表现不一致
+            final = final + self._ada_scale() * (final @ self.out_adapter)
         if self.tie_out:
             logits = _dq_mm_t(self.embed, final) + self.b_out
         else:
@@ -6218,6 +6372,11 @@ class DeepThinkTransformer:
         #   不必为了拿 trace 再整段前向一次 —— 一次思考里省掉一整个序列长度的完整前向。
         ctx = list(seed_tokens)
         out = list(seed_tokens)
+        # v3.8 提速仪表: 生成是一个"等一个词算一个词"的慢镜, 用户最怕的就是不知道快还是慢。
+        #   这里每多产出一个词都顺手把"已产出的词数 / 已花的时间"折算成 token/s 打进 UI_ST,
+        #   于是「已产出 M 字 · 每秒 N 词」真的贴着真实算力走, 不用靠猜。只记数计时, 不影响计算。
+        _gen_t0 = time.time()
+        _gen_n = 0
         # v1.8 Alpha 提速: 预填一次把整段前缀算完并建好每层 K/V 缓存, 之后每出一个词只算"这一个新位置"。
         #   旧实现每出一个词都把整段前缀重算一遍(O(n²)); 现在每个词的代价与序列长度无关(O(n) 总计),
         #   序列越长省得越多 —— "参数大了回答开始慢"的大头就在这里, 参数量却一点没少。
@@ -6231,6 +6390,8 @@ class DeepThinkTransformer:
         _pos = 0
         _filled = False
         for _ in range(max_tokens):
+            if _ABORT_TYPING["v"]:      # v2.8 修 P0 取消: /stop 当场停手, 不烧卡算完
+                break
             if not _filled and ctx:
                 probs = self._forward_cached(_ids_of(ctx), caches, 0,
                                              trace_collect=trace_out)   # 预填: 整段前缀一次算完 + 建缓存
@@ -6258,6 +6419,14 @@ class DeepThinkTransformer:
             #   于是慢的那一段(生成期)「已产出 N 字」也在动, 用户看得见小方在往前算, 不是在装死;
             #   打字机那边只打到这里为止(_stream_claim 同样被这条前沿约束), 一个字不提前打。
             _stream_mark(tok)
+            # v3.8 提速仪表: 每产出一个词就滚动刷新一次当前速率(用最近一段窗口, 不用全程均值)——
+            #   生成一整轮里快慢都会有, 实时折算比"总token/总秒"更能反映此刻的力。
+            _gen_n += 1
+            _gen_dt = time.time() - _gen_t0
+            if _gen_dt > 0.05:
+                UI_ST["tok_s"] = round(_gen_n / _gen_dt, 1)
+                _gen_t0 = time.time()
+                _gen_n = 0
             # 下一个词: 只算"刚加进来这一个位置"。缓存还没建时(空前缀的极端边界)这一步兼作预填,
             #   位置从 0 起算 —— 与旧实现 forward([tok]) 的口径逐字一致。
             probs = self._forward_cached([self.token2id.get(tok, 0)], caches, _pos,
@@ -6539,7 +6708,9 @@ def _kb_direct_hit(query, kb_hits, tok=None, min_pct=KB_DIRECT_PCT):
     """
     if not kb_hits:
         return None
-    for entry in [e for _s, e in kb_hits[:2]]:
+    # v2.8 修 BUG11: 原来只挖前 2 条候选, 前两个不对齐、第三个明明匹配也进不了闸门。
+    #   retrieve 能给到 top_k 条, 现在全量遍历, 只要有一条对齐且达标就直答。
+    for entry in [e for _s, e in kb_hits]:
         if not _kb_aligned(query, entry):
             continue
         pct = _kb_sim_pct(query, entry, tok)
@@ -6822,8 +6993,12 @@ def _tidy_reply(text):
     _s = a.rstrip()
     if not _s:
         return text
-    if _s[-1] not in "。！？!?…~：:；;，,、”)）」』】》>|":
-        _s = _s + "。"
+    # v1.11 修标点: 原收尾表没有英文句点 . , 英文答案以 ...intelligence. 结尾会被再补一个
+    #   「。」 → ...intelligence.。 现在把英文收尾 + 引号/括号全加进判定; 末尾是拉丁字母/数字
+    #   就补英文句点「.」, 否则补中文「。」——按语言选收尾标点, 不再混搭。
+    _ends = "。！？!?…~：:；;，,、”)）」』】》>|.\"')]}＞"
+    if _s[-1] not in _ends:
+        _s = _s + ('.' if re.search(r"[A-Za-z0-9%]$", _s) else '。')
     return _s + ("\n" if a.endswith("\n\n") else "")
 
 
@@ -6996,17 +7171,17 @@ class ResponseGenerator:
                 if not seed.endswith(("。", "！", "？")):
                     seed += "。"
                 return "关于「{}」：{}".format(core, seed), True
-            # ③b 库内确实没有这一条 → 如实说没有, 再给一个能接着往下走的方向。
-            #   病灶(用户原话): 这里原来固定吐"我可以从定义、原理、应用三方面给你讲透, 也能配上
-            #   例子和对比表格, 你想先听哪块?" —— 用户问的压根不是这个, 听着就是套模板。
-            #   现在按"用户问什么"坦白, 并给一句能接下去的; 三句轮换, 不重复同一个腔。
-            return random.choice([
-                "「{}」我知识库里确实没这条，就不硬编糊弄你了。你补一句具体想知道什么"
-                "（原理、怎么用、还是跟谁比），我按你说的方向答。".format(core),
-                "老实说，「{}」我手上没有靠得住的资料，不装懂。你要是把它放进一句话里"
-                "告诉我你想解决什么，我照样能帮你往下推。".format(core),
-                "「{}」这块不在我的知识库里，我不猜着答。你再说细一点，我立刻贴着你的问题答。".format(core),
-            ]), True
+            # ③b 数据覆盖不到 → 不摆烂, 按"网络本体生成 → 邻近搭桥 → 诚实引导"三级降级:
+            #   网络本体能生成就生成(借用已知概念作语感锚), 网络没接上就找语义最近的
+            #   已知实体铺一点实质内容, 实在都没有才按提问形状问一句接下去的方向。
+            #   整条链不再出现"我知识库里没这条 / 我不猜着答"这种裸拒答。
+            _nb = self._gen_network_answer(query, core, emo)
+            if _nb:
+                return _nb, True
+            _bridge = self._gen_nearbridge(query, core)
+            if _bridge:
+                return _bridge, True
+            return self._gen_honest_guide(query, core), True
         # ④ 完全虚指 → 温和澄清, 避免答非所问
         return "这句我没抓到具体想问的点，你补一句场景或换个说法，我立刻贴着你说的答。", True
 
@@ -7078,6 +7253,103 @@ class ResponseGenerator:
                 if s:
                     return s[0][:60] + "。"
         return None
+
+    def _gen_network_answer(self, query, core, emo):
+        """数据覆盖不到的提问 → 由网络本体生成, 不摆烂也不硬编。
+
+        思路(搭桥): 把库里与 query 语义最近、重词最多的几条已知概念当作"语感锚"塞进
+        bias 提示词, 网络在自己学过的已知概念语言空间里续写对未知实体的回答 —— 有实质
+        内容, 语气句式又接得上。网络没接(缺 / 异常 / 空生成)就返回 None, 交上层降级。"""
+        tr = getattr(self, "tf", None)
+        if not tr or not getattr(tr, "generate", None) or not getattr(tr, "token2id", None):
+            return None
+        # ① 邻近已知概念作语感锚(只取与问题有词重叠的条目, 不做全库相似度, 省时)
+        anchors = []
+        qset = self.tok.tokenize_set(query) or set(self.tok.tokenize(core or ""))
+        if qset:
+            scored = []
+            for entry in DATA.KNOWLEDGE_BASE:
+                eset = self.tok.tokenize_set(str(entry.get("t", "")))
+                if not eset:
+                    continue
+                ov = len(qset & eset) / max(len(qset), 1)
+                if ov <= 0.15:
+                    continue
+                sim = _kb_sim_pct(query, entry, self.tok) if query else 0.0
+                sents = _split_sents(str(entry.get("b", "")))
+                scored.append((0.55 * sim + 0.45 * ov,
+                               sents[0] if sents else str(entry.get("t", ""))))
+            scored.sort(reverse=True)
+            for _sc, _txt in scored[:2]:
+                anchors.append(_txt)
+        # ② 组种子 + 偏置: 让网络明确"在讲 core", 并借语感锚稳住语气
+        seed_text = "关于「{}」，我来讲讲：".format(core)
+        seed = self.tok.tokenize(seed_text)[:SEED_TOKENS] or ["好"]
+        bias = set(seed)
+        bias |= set(t for t in self.tok.tokenize(" ".join([core or ""] + anchors)) if t)
+        try:
+            outline = tr.generate(seed, bias, max_tokens=34,
+                                  temperature=0.9, top_p=0.94)
+        except Exception:
+            return None
+        tail = "".join(t for t in outline[len(seed):] if t and t != TERMINATOR)
+        # v1.11 反乱码: 第一遍吐得太短/像符号汤 → 低温收窄重采一遍, 逼出更通顺的中文;
+        #   两遍都不合格就直接交上层降级, 绝不把 ▓♥♣ 之类乱码端给用户。
+        if len(tail) < 6 or _garbled_tail(tail):
+            try:
+                outline = tr.generate(seed, bias, max_tokens=34,
+                                      temperature=0.62, top_p=0.97)
+                tail = "".join(t for t in outline[len(seed):] if t and t != TERMINATOR)
+            except Exception:
+                tail = ""
+        tail = _clip_natural(tail, 72, 10).strip(" ，。！？；:：、\n\"“”'『』«»\xa0")
+        if len(tail) < 6 or _garbled_tail(tail):   # 重采仍乱码/太短 → 视为没生成, 交上级降级
+            return None
+        if not tail.endswith(("。", "！", "？")):
+            tail += "。"
+        return seed_text + tail
+
+    def _gen_nearbridge(self, query, core):
+        """网络没接上时的次一级兜底: 找与问题有实在词重叠的已知实体, 诚实地说
+        "直接讲资料不够, 但它跟 X 靠得近, 我按这个方向给你铺一点实质内容"。"""
+        qset = self.tok.tokenize_set(query) or set(self.tok.tokenize(core or ""))
+        if not qset:
+            return None
+        best = None
+        for entry in DATA.KNOWLEDGE_BASE:
+            eset = self.tok.tokenize_set(str(entry.get("t", "")))
+            if not eset:
+                continue
+            ov = len(qset & eset) / max(len(qset), 1)
+            if ov < 0.3:
+                continue
+            sents = _split_sents(str(entry.get("b", "")))
+            if not sents:
+                continue
+            sim = _kb_sim_pct(query, entry, self.tok) if query else 0.0
+            if best is None or ov + sim > best[0]:
+                best = (ov + sim, str(entry.get("t", "")), sents[0])
+        if not best:
+            return None
+        _sc, tb, first = best
+        return ("「{}」我直接讲，手头专注的资料不太够；但它跟「{}」靠得近，"
+                "我先按这个方向给你铺一点：{}。你往哪个点再钻，我贴着你给答。"
+                ).format(core, tb, first)
+
+    def _gen_honest_guide(self, query, core):
+        """末级兜底: 按提问形状挑一个真正相关的追问维度问下去, 不再三句绕口头轮换,
+        并给出"点头就联网查"的实在出路。"""
+        if any(k in query for k in ("怎么", "如何", "办法", "流程", "步骤", "能不能")):
+            dim = "你手里现在卡在哪一步？要我把第一步的拆法直接给你吗？"
+        elif any(k in query for k in ("为什么", "原理", "原因", "所以")):
+            dim = "你是想听它背后的原理，还是关心它对你现在这件事的影响？说一句，我顺着你的落点展开。"
+        elif any(k in query for k in ("是什么", "啥", "什么意思", "介绍", "讲讲")):
+            dim = "要我拿你熟悉的东西当参照，给你打个比方把它讲清吗？"
+        else:
+            dim = "你想先要个简版结论，还是要我一步步拆开讲？"
+        return ("「{}」我没直接存成词条，不给你瞎编。{}"
+                "（你要是点个头，我现在就联网把最新的资料查出来铺给你。）"
+                ).format(core, dim)
 
     def _insert_emojis(self, text, emo):
         # v1.8 Alpha: 情绪 emoji 只落在合法位 —— 逗号/句号/换行符/终止符 的**前面**。
@@ -7782,7 +8054,14 @@ class MathResponder:
             return True
         if re.search(r"\d\s*[\+\-*/%×÷]\s*\d", raw):
             return True
-        if re.search(r"[\d一二两三四五六七八九十百千万]+(?:加|减|乘|除|乘以|除以|的平方|的立方|等于多少|等于|求值)", raw):
+        # ★v3.10: 同 IntentDetector —— 带空格/全角也要认("1234 乘以 5678 等于多少？")
+        if re.search(r"[\d一二两三四五六七八九十百千万]+\s*(?:加|减|乘|除|乘以|除以|的平方|的立方|等于多少|等于|求值)", raw):
+            return True
+        # ★v3.10 根治: 归一后仍是纯算式 → 一律交给数学引擎(与写法解耦)
+        if _arith_intent(raw):
+            return True
+        # ★v3.10: 中文数字算式同理("三加五等于多少") —— 归一成阿拉伯数字后仍是纯算式才算
+        if _cn_arith_intent(raw):
             return True
         if any(w in raw for w in ["算一下", "计算", "数学题", "求和", "求值"]):
             return True
@@ -8160,6 +8439,8 @@ class MathResponder:
                 break       # 遇到非数学 token 结束
             i += 1
         expr = "".join(out).strip()
+        # ★v3.10: 展示用的算式抹掉"12 **2"这种残留空格 —— 用户看到的是"12**2"
+        expr = re.sub(r"\s*\*\*\s*", "**", expr).strip()
         if not expr or not re.search(r"\d|pi|e|\)", expr):
             return None
         if expr.count("(") > expr.count(")"):        # "根号16"→sqrt(16 补全右括号
@@ -8446,6 +8727,12 @@ class MathResponder:
         return None
 
     def answer(self, raw):
+        # ★v3.10: 中文数字算式先换成阿拉伯数字再走全流程("三加五"→"3+5")。
+        #   只在"整串确实是中文数字算式"时才换, 所以"我们一起算一下"里的"一"不动。
+        #   换成阿拉伯数字后, 后面的 detect/归一/AST/微积分等全部分支都无需再各自补中文支持 ——
+        #   一处归一, 全线复用, 避免以后再冒第三只同类洞。
+        if isinstance(raw, str) and _cn_arith_intent(raw):
+            raw = _cn_digits(raw)
         if not self.detect(raw):
             return None
         # v1.8 Alpha: 微积分(求导/积分/微分方程)抢先处理 —— 微分方程右端也含 "=",
@@ -9631,6 +9918,13 @@ class LearnerMemory:
 _WARM = {"on": False, "sec": 0.0, "ok": False, "err": ""}
 _GATE = threading.Event()          # 显卡栅栏: 后台占用期间关闭, 收工即放行
 _GATE.set()                        # 默认放行 —— 不开预热时推理路径完全不受影响
+#   ★v3.9 竞态封死(本次修复的核心): 这套标记的"读"与"写"必须成对落在同一把元锁里。
+#     旧版推理侧只"看一眼 _WARM/_TRAINQ 就过闸", 后台侧"判断让路 →（拼样本, 几百毫秒）→
+#     才立 busy" —— 中间这段空窗足够让两个线程同时摸显卡, 而按 9790 行的实测教训, 那会把
+#     整个进程冻死(不是报错、不是变慢, 是 CPU 时间都不再增长、屏幕上一点动静都没有)。
+#     _GPU_CLAIM 只护标记的读写(微秒级), 不护真正的计算, 所以不会引入任何新的阻塞。
+_GPU_CLAIM = threading.Lock()      # 显卡所有权元锁: 只管"谁占着显卡"这几个标记的读写
+_CHAT_BUSY = {"v": False, "gen": 0}  # 一轮对话是否在跑 + 代次号(见 _gpu_enter/_gpu_leave)
 
 # ===== v2.3 ★后台训练单槽(直出类不再等反向传播) =====
 #   实测(prof): 直出类一轮 ≈ 10 s, 其中 _train_turn 占 6.9 s(68%)、打字机节奏 3.0 s。
@@ -9646,9 +9940,16 @@ _TRAINQ = {"busy": False, "n": 0, "skip": 0, "sec": 0.0}
 
 
 def _warm_up_kernels(tr, tokenizer):
-    """后台把推理内核编译热: 只做一次极短前向, 不落盘、不改任何模型状态。"""
-    _GATE.clear()                  # 占住显卡
-    _WARM["on"] = True
+    """后台把推理内核编译热: 只做一次极短前向, 不落盘、不改任何模型状态。
+
+    ★v3.9: 上手前必须在 _GPU_CLAIM 里确认此刻【真的没人用显卡】—— 只要对话或后台训练
+    在跑, 本次预热就直接放弃(宁可这一轮不预热, 也绝不与别人同时摸显卡; 并行 = 冻死)。"""
+    with _GPU_CLAIM:
+        if _CHAT_BUSY["v"] or _TRAINQ["busy"]:
+            _WARM["err"] = "busy"      # 有人正在用显卡 → 本次预热放弃, 安全第一
+            return
+        _GATE.clear()                  # 占住显卡
+        _WARM["on"] = True
     try:
         try:
             _ids = [tr.token2id.get(x, 0) for x in tokenizer.tokenize("预热")]
@@ -9662,18 +9963,50 @@ def _warm_up_kernels(tr, tokenizer):
     except Exception as _e:
         _WARM["err"] = repr(_e)
     finally:
-        _WARM["on"] = False
-        _GATE.set()                # 无论成败都放行, 绝不把正式推理挡在栅栏外
+        with _GPU_CLAIM:
+            _WARM["on"] = False
+            _GATE.set()            # 无论成败都放行, 绝不把正式推理挡在栅栏外
 
 
-def _wait_warm_gate(cap=30.0):
-    """正式推理进显卡前的统一入口: 后台(预热/训练)没完就等它(有上限, 绝不无限等)。
+def _gpu_enter(cap=45.0):
+    """★v3.9 正式推理进显卡的唯一闸门(原 _wait_warm_gate 的强化版)。
 
-    两个占用者都要看: 预热线程(_WARM["on"]) 与 后台训练线程(_TRAINQ["busy"])。
-    两者都由【调用线程】先把标记立起来、再关栅栏, 所以这里看到的标记一定是真的。"""
-    if not _WARM["on"] and not _TRAINQ["busy"]:
-        return True                # 没人在用显卡 → 零等待直接过
-    return _GATE.wait(timeout=cap)
+    与后台(预热/训练)共用 _GATE 栅栏, 但关键差别是: 【"确认没人占"与"宣布我占"在同一把
+    _GPU_CLAIM 里一次做完】。旧版只"看一眼标记"就放行, 留下几毫秒空窗 —— 后台温习刚过完
+    让路判断、busy 还没来得及立起来, 推理就挤了进去, 两个线程同时摸显卡 → 进程冻死。
+
+    只等【后台】两种占用(内核预热 _WARM / 后台训练 _TRAINQ), 这正是冻死的那个组合, 也是
+    唯一必须等的: 预热一次要编译十几二十秒, 等它是天经地义。
+    ★刻意不等 _CHAT_BUSY(上一轮对话): 一轮被主线程判过"卡住"而放生时, 用户已经被告知
+    "小方先让开, 你可以直接发下一句" —— 若这里再去等它, 第二句会凭空卡上几十秒, 自食其言。
+    那一类"上一轮还没收尾"的交叠, 上游已有 _prev.join(0.4) + /stop + 代次号三重兜底:
+    代次号保证放生的旧 worker 收尾时【撤不掉】新一轮的占用(见 _gpu_leave)。
+
+    返回本轮的"代次号"; 收工时必须原样交给 _gpu_leave(只有仍是当前那一轮才许交还显卡)。
+    """
+    t0 = time.time()
+    while True:
+        with _GPU_CLAIM:
+            if (not _WARM["on"]) and (not _TRAINQ["busy"]):
+                _CHAT_BUSY["gen"] += 1         # 代次 +1: 同时作废掉上一轮残留的"收工交还权"
+                _CHAT_BUSY["v"] = True         # ★占了就当场登记: 后台温习此后必然看到 True
+                return _CHAT_BUSY["gen"]
+        if time.time() - t0 > cap:             # 兜底: 等太久也放行, 绝不把用户无限挡在门外
+            with _GPU_CLAIM:
+                _CHAT_BUSY["gen"] += 1
+                _CHAT_BUSY["v"] = True
+                return _CHAT_BUSY["gen"]
+        _GATE.wait(timeout=0.05)               # 栅栏一放行立刻唤醒, 最多每 50ms 复查一次
+
+
+def _gpu_leave(gen=None):
+    """一轮对话彻底收工: 交还显卡所有权, 后台温习可以继续。
+
+    ★v3.9 只认代次: 若此刻"当前轮"已经不是自己(说明新一轮已经接管), 就不许把标记清掉 ——
+    否则会把新一轮的占用误撤, 让后台温习趁虚而入, 又变成两个线程同时碰显卡。"""
+    with _GPU_CLAIM:
+        if gen is None or int(_CHAT_BUSY.get("gen", 0)) == int(gen):
+            _CHAT_BUSY["v"] = False
 
 
 def _train_async(owner, text, answer):
@@ -9681,11 +10014,22 @@ def _train_async(owner, text, answer):
 
     返回 True = 已派出去(或已有训练在跑, 本轮样本跳过); False = 派不出去, 调用方需自行
     同步训练兜底。单槽设计: 上一个训练没收工就跳过本轮, 队列永远只有 0 或 1 条, 内存不涨。"""
-    if _TRAINQ["busy"]:
-        _TRAINQ["skip"] += 1        # ★跳过样本, 而不是排队 —— 宁可少学一条, 绝不越积越多
-        return True
-    _TRAINQ["busy"] = True
-    _GATE.clear()                   # ★先关栅栏再起线程: 绝不留下"下一轮推理已过闸"的竞态窗口
+    # v3.3: 无论如何先把这轮「用户输入 + AI输出」攒进回放缓冲(后台温习会用, 存进唯一 NPZ)
+    try:
+        _replay_add(text, answer)
+    except Exception:
+        pass
+    #   ★v3.9: "确认没人占"与"宣布我占"必须落在同一把 _GPU_CLAIM 里 —— 和推理侧的 _gpu_enter
+    #     用同一把元锁, 于是它再也挤不进"我判断完了、busy 还没来得及立起来"的那道缝。
+    #     注意: 此处【刻意不看 _CHAT_BUSY】—— 本函数就是在一轮对话里被调用(把这一轮的反向传播
+    #     挪到最后去做), 那一刻前台的生成早已结束; 若在这里看 _CHAT_BUSY, 后台训练会永久停摆。
+    #     真要防的是"预热同时在跑": 那就跳过本轮样本, 绝不同时摸显卡(并行 = 冻死, 见 9801 行)。
+    with _GPU_CLAIM:
+        if _TRAINQ["busy"] or _WARM["on"]:
+            _TRAINQ["skip"] += 1    # ★跳过样本, 而不是排队 —— 宁可少学一条, 绝不越积越多
+            return True
+        _TRAINQ["busy"] = True
+        _GATE.clear()               # ★先关栅栏再起线程: 绝不留下"下一轮推理已过闸"的竞态窗口
 
     def _run():
         t0 = time.time()
@@ -9694,19 +10038,525 @@ def _train_async(owner, text, answer):
         except Exception:
             pass                    # 训练失败绝不冒泡(它只是"顺便学一手", 不是交付的一部分)
         finally:
-            _TRAINQ["sec"] = time.time() - t0
-            _TRAINQ["n"] += 1
-            _TRAINQ["busy"] = False
-            _GATE.set()             # 无论成败都放行, 绝不把下一轮推理挡在栅栏外
+            with _GPU_CLAIM:
+                _TRAINQ["sec"] = time.time() - t0
+                _TRAINQ["n"] += 1
+                _TRAINQ["busy"] = False
+                _GATE.set()         # 无论成败都放行, 绝不把下一轮推理挡在栅栏外
 
     try:
         th = threading.Thread(target=_run, name="xf-train-bg", daemon=True)
         th.start()
         return True
     except Exception:
-        _TRAINQ["busy"] = False
-        _GATE.set()
+        with _GPU_CLAIM:
+            _TRAINQ["busy"] = False
+            _GATE.set()
         return False
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# v3.3 ★对话经验回放 + 后台温习机器人
+#   需求(用户原话): 每回对话后都把「用户输入 + AI 输出」放进【唯一一个 NPZ】文件;
+#   只要 AI 挂后台, 就一遍遍拿这些对话反复训练「路由 + 其他能力」, 直到找到最优解;
+#   训练成果仍写回同一个 NPZ; 关闭控制台时进程彻底退出, 不残留后台。
+#   · 回放缓冲 _REPLAY: 内存里保最新 _REPLAY_CAP 条, 与训练主权重写进同一个 NPZ
+#     (xiaofang_train_covi1_*.npz —— 全程只碰这一个 NPZ)。
+#   · 后台温习 _idle_train_loop: 空闲时逐条拿回放样本做一步反向传播, 与前台共用
+#     _GATE 栅栏 + _TRAIN_LOCK 锁, 绝不抢占正在对话的显卡, 步间留缝不空烧 CPU。
+#   · 退出 _shutdown: 置旗标 → 记忆 + 主权重 + 回放 全量落盘 → 主线程收尾即进程结束。
+#   所有新增线程一律 daemon=True —— 关控制台瞬间进程立刻终结, 绝不当后台"病毒"。
+# ════════════════════════════════════════════════════════════════════════════
+_REPLAY = {
+    "in": [], "out": [], "idx": 0,
+    "lock": threading.Lock(), "n": 0,
+}
+_REPLAY_CAP = 600          # 最多保留的对话条数(有界, 防止唯一 NPZ 越写越大)
+_REPLAY_MAX_CHARS = 480    # 单条输入/输出截断(防止一条超长占满整个缓冲)
+_EXIT_FLAG = threading.Event()            # 全程序统一退出旗标: 置位后后台线程各自收工
+_TRAIN_LOCK = threading.Lock()            # 兜底串行: 前台训练与后台温习绝不并发改同一批权重
+# ★v3.9: _CHAT_BUSY(对话占用标记 + 代次号)已统一到上面的显卡栅栏段一起定义(见 9812 行)。
+#   此处【绝不可】再写一份 —— 旧版这里还留着一句 `_CHAT_BUSY = {"v": False}`, 它会在导入时
+#   把上面那个带 "gen" 的字典整个覆盖掉, _gpu_enter 里的 `_CHAT_BUSY["gen"] += 1` 随即 KeyError。
+_IDLE_DONE = {"steps": 0, "persist": 0}   # 后台温习计数(/memory 的一行小账本)
+_IDLE_TRAIN_GAP = 0.30    # 后台温习步间隔(秒): 源码语料灌进来后更激进一点, 空闲时更快把正常中文磨进去
+SRC_TRAIN_BIAS = 0.60     # 后台温习在「话语料 vs 对话回放」间的总偏置: 话语料优先……
+#                         因为"现在输出仍旧乱码"的根因是网络没学过足够通畅的中文, 源码注释是最佳语料。
+NOVEL_TRAIN_BIAS = 0.10   # v2.8 修 BUG4: 话语料里分给「小说语感」的份额(表达/衔接/节奏)
+CODE_TRAIN_BIAS = 0.10    # v2.8 修 BUG4: 话语料里分给「代码知识」的份额(让小方懂代码怎么用)
+#                         剩余 0.60-0.10-0.10=0.40 仍是「源码说人话」, 总话语料仍占 0.60,
+#                         剩余 0.40 给「对话回放」学怎么答 —— 与旧行为量级一致, 只是把原来
+#                         没用上的小说/代码两路也纳进挂机温习(不再只混"源码+回放"两路)。
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# v1.11 源码自训语料: 把 AI 小方自己的 .py 源码里满仓的通顺中文注释 + docstring
+#   抽成"正常说话"的训练语料, 后台温习拿去反复反向传播 —— 让网络从自己的注释里学会
+#   一口正常、顺畅的中文, 直接从源头治"生成仍是乱码"。纯 CPU 字符串抽取, 零 GPU。
+# ════════════════════════════════════════════════════════════════════════════
+_SRC_FILES = None
+
+
+def _source_files():
+    global _SRC_FILES
+    if _SRC_FILES is None:
+        _d = os.path.dirname(os.path.abspath(__file__))
+        _SRC_FILES = []
+        _self = os.path.basename(__file__)
+        for _n in ("xiaofang_data_covi1.py", "svgdream_covi1.py", _self):
+            _p = os.path.join(_d, _n)
+            if _p and os.path.exists(_p) and _p not in _SRC_FILES:
+                _SRC_FILES.append(_p)
+    return _SRC_FILES
+
+
+_SRC_DOCRE = re.compile(r'"""(.*?)"""', re.S)
+_SPEAK_PROMPTS = ["正常说话", "说一句通顺的中文", "用中文这样说", "话要这样说",
+                  "用这样的语气讲", "中文该这么表达"]
+
+
+def _cjk_count(s):
+    return sum(1 for c in s if "\u4e00" <= c <= "\u9fff")
+
+
+def _src_is_natural(s):
+    """只留"能当正常中文说出口"的片段 —— 中文必须占文字主体; 纯代码、纯符号、太短的一律不要。
+
+    放宽说明: 不封杀含 Transformer / GPU / API 等术语的注释(那正是最通顺的中文技术表述),
+    只要求中文占字母数字主位, 免得把纯英文/纯符号行当听说学进来。"""
+    cjk = _cjk_count(s)
+    if not s or cjk < 6:
+        return False
+    if re.search(r"=[\"']|\.py|\.txt|\{\}|\$\(|\]\s*=", s):
+        return False
+    alnum = sum(1 for c in s if c.isalnum())
+    if cjk / max(alnum, 1) < 0.5:          # 中文必须占文字主体 → 才能当"正常中文"学
+        return False
+    return True
+
+
+def _source_segments(max_total=1200):
+    """遍历自身源码, 收 docstring + 整行中文注释, 去重 + 截量, 得到纯中文语料表。"""
+    out, seen = [], set()
+    for _f in _source_files():
+        try:
+            with open(_f, "r", encoding="utf-8", errors="ignore") as _h:
+                _src = _h.read()
+        except Exception:
+            continue
+        for _m in _SRC_DOCRE.finditer(_src):
+            _t = _m.group(1).strip().replace("\n", " ")
+            _t = re.sub(r"\s{2,}", " ", _t).strip()
+            # v2.8 修 docstring 截断: 正则去了 [^"]{14,} 长度约束, 这里显式补 ≥14 守卫
+            if len(_t) >= 14 and _src_is_natural(_t) and _t not in seen:
+                seen.add(_t)
+                out.append(_t)
+        for _ln in _src.splitlines():
+            _s = _ln.strip()
+            if _s.startswith("#"):
+                _b = _s[1:].lstrip("# ").strip()
+                if _b and _src_is_natural(_b) and 8 <= len(_b) <= 120 and _b not in seen:
+                    seen.add(_b)
+                    out.append(_b)
+        if len(out) >= max_total:
+            break
+    return out[:max_total]
+
+
+_SRC_CORPUS = None
+_SRC_CORPUS_LOCK = threading.Lock()
+_SRC_IDX = {"i": 0}
+
+
+def _source_pool():
+    global _SRC_CORPUS
+    if _SRC_CORPUS is None:
+        with _SRC_CORPUS_LOCK:
+            if _SRC_CORPUS is None:
+                _SRC_CORPUS = _source_segments()
+    return _SRC_CORPUS
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Covi 1 · 小说「说话」语料池 —— 教小方像正常人一样行文说话
+#   语料来源: 桌面\小方小说\ 三本(小方趣生活 / 小方趣生活2 / 方之旅途,
+#   合计约 110 万字)。只用来学「怎么说人话」(语感/表达/衔接/节奏),
+#   不往代码区放 —— 代码区只放提炼过的代码知识(见 _code_knowledge_pool)。
+#   做法: 按句切开 → 滤短句/纯符号/重复 → 句子按长度分层限量,
+#   长句(复杂表达)与短句(口语节奏)都有配额, 不整段照搬、不背章节。
+# ══════════════════════════════════════════════════════════════════════
+_NOVEL_FOLDERS = ("小方小说",)
+
+
+def _resolve_novel_dir():
+    """v2.8 修 BUG3: 桌面目录在中文 Windows 是「桌面」不是「Desktop」, 且可能挂到 OneDrive 下。
+    依次探测 桌面/桌面/OneDrive 两种语言 + 覆盖子目录(小方小说), 外加环境变量兜底;
+    全没命中就把正式小说目录交给用户配置(见 _NOVEL_DIR 下方说明)。每次探测, 文件夹后建也能认。"""
+    _env = (os.environ.get("XIAOFANG_NOVEL_DIR") or "").strip()
+    if _env and os.path.isdir(_env):
+        return _env
+    _home = os.path.expanduser("~")
+    for _root in ("Desktop", "桌面",
+                  os.path.join("OneDrive", "Desktop"),
+                  os.path.join("OneDrive", "桌面")):
+        for _sub in _NOVEL_FOLDERS:
+            _p = os.path.join(_home, _root, _sub)
+            if os.path.isdir(_p):
+                return _p
+    # 兜底: 默认按英文桌面路径拼(文件夹不存在时由 _novel_segments 自然落空, 不崩)
+    return os.path.join(_home, "Desktop", _NOVEL_FOLDERS[0])
+
+
+_NOVEL_DIR = _resolve_novel_dir()
+_NOVEL_FILES = ("小方趣生活.txt", "小方趣生活2.txt", "方之旅途.txt")
+_NOVEL_MAX_TOTAL = 24000          # 说话语料池上限(一次训练循环的量)
+_NOVEL_SENT_SPLIT = re.compile(r"[。！？!?；;\n]")
+
+_NOVEL_CORPUS = None
+_NOVEL_CORPUS_LOCK = threading.Lock()
+_NOVEL_IDX = {"i": 0}
+
+
+def _novel_segments(max_total=_NOVEL_MAX_TOTAL):
+    """读三本小说 → 自然语句表。只留 8~120 字、中文占主体的句子, 去重去噪。"""
+    out, seen = [], set()
+    _base = _resolve_novel_dir()          # 每次探测: 处理后建/换语言/环境变量都认
+    for name in _NOVEL_FILES:
+        p = os.path.join(_base, name)
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8-sig", errors="ignore") as _h:
+                _text = _h.read()
+        except Exception:
+            continue
+        for _seg in _NOVEL_SENT_SPLIT.split(_text):
+            _s = _seg.strip().replace("\r", " ").replace("\n", " ").lstrip("\ufeff")
+            _s = re.sub(r"\s{2,}", " ", _s).strip("　 \t")
+            if not _s or len(_s) < 8 or len(_s) > 120:
+                continue
+            _cjk = _cjk_count(_s)
+            if _cjk < 5 or _cjk / max(len(_s), 1) < 0.5:
+                continue
+            if _s in seen:
+                continue
+            seen.add(_s)
+            out.append(_s)
+            if len(out) >= max_total:
+                return out
+    return out
+
+
+def _novel_pool():
+    global _NOVEL_CORPUS
+    if _NOVEL_CORPUS is None:
+        with _NOVEL_CORPUS_LOCK:
+            if _NOVEL_CORPUS is None:
+                _NOVEL_CORPUS = _novel_segments()
+    return _NOVEL_CORPUS
+
+
+def _novel_sample():
+    """取一条小说语句作「答案」+ 说话提示词作「问题」→ (q, a) 或 None。"""
+    pool = _novel_pool()
+    if not pool:
+        return None
+    _NOVEL_IDX["i"] = (_NOVEL_IDX["i"] + 1) % len(pool)
+    return (random.choice(_SPEAK_PROMPTS), pool[_NOVEL_IDX["i"]])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Covi 1 · 代码知识池(Data 代码区) —— 教小方【懂】代码, 不是【背】代码
+#   来源: xiaofang_code_bank_covi1.py 手写核心条目 + 训练时自动提炼自身/
+#   历史版本的「函数签名 + docstring 首句」成"这个函数干什么、怎么用"。
+#   绝不整段搬源代码 —— 提炼的是用法与原理, 不是源码原文。
+# ══════════════════════════════════════════════════════════════════════
+_CODE_PROMPTS = ["写一段 Python", "Python 这个怎么写", "这段 Python 怎么用",
+                 "给我讲讲 Python", "Python 的原理是什么", "用 Python 实现一下",
+                 "Python 的底层原理是什么"]
+
+_CODE_BANK_PATHS = (
+    "xiaofang_covi1.py", "xiaofang_data_covi1.py", "svgdream_covi1.py",
+)
+_CODE_BANK_MAX_AUTO = 800        # 自动提炼的函数用法条目上限
+
+_CODE_CORPUS = None
+_CODE_CORPUS_LOCK = threading.Lock()
+_CODE_IDX = {"i": 0}
+
+
+def _auto_kb_cache_path():
+    """自动提炼的代码知识落盘位置 —— 与 title_cache 同一待遇: 可随时删、删了会自动重建。"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "权重缓存", "code_knowledge.json")
+
+
+def _auto_kb_fingerprint():
+    """对《自身 + xiaofang_* + 历史版本 .py》扫一圈做指纹(路径+mtime+大小)。
+
+    任一个语料文件一变指纹就变 → 下次自动重扫; 全没变 → 直接读缓存, 不再反复 ast.parse。"""
+    import hashlib as _hl
+    files = list(_source_files())
+    _hist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "历史版本")
+    if os.path.isdir(_hist):
+        for _root, _dirs, _names in os.walk(_hist):
+            for _n in sorted(_names):
+                if _n.endswith(".py") and not _n.startswith("_"):
+                    files.append(os.path.join(_root, _n))
+    parts = []
+    for _f in files:
+        try:
+            _st = os.stat(_f)
+            parts.append("{}:{}:{}".format(_f, int(_st.st_mtime), _st.st_size))
+        except Exception:
+            pass
+    return _hl.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _auto_code_knowledge_cached(max_total=_CODE_BANK_MAX_AUTO):
+    """缓存版提炼: 指纹没变直接读 json; 变了才重扫并回写(规避冷启动反复 ast.parse 几十个历史文件)。"""
+    _p = _auto_kb_cache_path()
+    try:
+        _fp = _auto_kb_fingerprint()
+        with open(_p, "r", encoding="utf-8") as _h:
+            _data = json.load(_h)
+        if _data.get("fingerprint") == _fp:
+            return [e for e in _data.get("entries", [])][:max_total]
+    except Exception:
+        pass
+    _out = _auto_code_knowledge(max_total)
+    try:
+        _fp = _auto_kb_fingerprint()
+        with open(_p, "w", encoding="utf-8") as _h:
+            json.dump({"fingerprint": _fp, "entries": _out}, _h, ensure_ascii=False)
+    except Exception:
+        pass
+    return _out
+
+
+def _auto_code_knowledge(max_total=_CODE_BANK_MAX_AUTO):
+    """扫自身 + 历史版本 .py, 把「函数签名 + docstring 首句」提炼成中文用法条目。
+
+    只取 docstring 是中文、能独立成句的 —— 这就是"这个函数是干什么的、怎么用"。
+    签名折成白话(去掉装饰器/默认值噪音), 与首句拼成一条知识, 限量去重。"""
+    import ast as _ast
+    out, seen = [], set()
+    files = list(_source_files())
+    _hist = os.path.join(os.path.dirname(os.path.abspath(__file__)), "历史版本")
+    if os.path.isdir(_hist):
+        for _root, _dirs, _names in os.walk(_hist):
+            for _n in sorted(_names):
+                if _n.endswith(".py") and not _n.startswith("_"):
+                    files.append(os.path.join(_root, _n))
+    for _f in files:
+        try:
+            with open(_f, "r", encoding="utf-8", errors="ignore") as _h:
+                _src = _h.read()
+        except Exception:
+            continue
+        try:
+            _tree = _ast.parse(_src)
+        except Exception:
+            continue
+        for _node in _ast.walk(_tree):
+            if not isinstance(_node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                continue
+            _doc = _ast.get_docstring(_node)
+            if not _doc:
+                continue
+            _first = _doc.strip().splitlines()[0].strip().replace("\n", " ")
+            _first = re.sub(r"\s{2,}", " ", _first).strip("。；; ")
+            if not (8 <= len(_first) <= 90) or _cjk_count(_first) < 6:
+                continue
+            if isinstance(_node, _ast.ClassDef):
+                _head = "类 {}".format(_node.name)
+            else:
+                _args = ", ".join(_a.arg for _a in getattr(_node.args, "args", [])[1:6])
+                _head = "函数 {}({})".format(_node.name, _args)
+            _entry = "{}：{}。".format(_head, _first)
+            if _entry in seen:
+                continue
+            seen.add(_entry)
+            out.append(_entry)
+            if len(out) >= max_total:
+                return out
+    return out
+
+
+def _code_knowledge_pool():
+    """Data 代码区语料 = 手写核心条目 + 自动提炼的函数用法(懒加载, 只算一次)。"""
+    import importlib.util as _ilu
+    global _CODE_CORPUS
+    if _CODE_CORPUS is None:
+        with _CODE_CORPUS_LOCK:
+            if _CODE_CORPUS is None:
+                _items = []
+                try:
+                    _bp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "xiaofang_code_bank_covi1.py")
+                    _bspec = _ilu.spec_from_file_location("xf_code_bank", _bp)
+                    _bmod = _ilu.module_from_spec(_bspec)
+                    sys.modules["xf_code_bank"] = _bmod
+                    _bspec.loader.exec_module(_bmod)
+                    _items = list(getattr(_bmod, "CODE_KNOWLEDGE", ()) or ())
+                except Exception:
+                    pass
+                _items.extend(_auto_code_knowledge_cached())
+                _CODE_CORPUS = _items
+    return _CODE_CORPUS
+
+
+def _code_knowledge_sample():
+    """取一条代码知识作「答案」+ 代码类提示词作「问题」→ (q, a) 或 None。"""
+    pool = _code_knowledge_pool()
+    if not pool:
+        return None
+    _CODE_IDX["i"] = (_CODE_IDX["i"] + 1) % len(pool)
+    return (random.choice(_CODE_PROMPTS), pool[_CODE_IDX["i"]])
+
+
+def _source_sample():
+    """取一条源码中文语料作「答案」+ 一个说话提示词作「问题」→ (q, a) 或 None。"""
+    pool = _source_pool()
+    if not pool:
+        return None
+    _SRC_IDX["i"] = (_SRC_IDX["i"] + 1) % len(pool)
+    return (random.choice(_SPEAK_PROMPTS), pool[_SRC_IDX["i"]])
+
+
+def _garbled_tail(t):
+    """肉眼判定一段生成文是不是"乱码/符号汤" —— 只有零星文字、其余全是符号 → 真乱码。
+
+    中文答案与英文答案 alnum 占比都会很高; 只有靠选区映射 id≈0 拼出的纯符号串才会整段
+    不含字母数字 → 一眼假, 交上层降级, 绝不让用户看到一串 ▓♥♣ 之类的乱码。"""
+    if not t:
+        return True
+    if len(t) < 8:
+        return True
+    alnum_cjk = sum(1 for c in t if c.isalnum() or "\u4e00" <= c <= "\u9fff")
+    return alnum_cjk / len(t) < 0.5
+
+
+def _replay_add(text, answer):
+    """每轮对话结束, 把「用户输入 + AI输出」攒进回放缓冲(清洗 + 去重 + 有界)。
+    无论这轮有没有真的训进权重, 样本都会留下 —— 后台会反复拿它温习。"""
+    _u = (str(text or "") or "").strip()
+    _a = (str(answer or "") or "").strip()
+    if not _u or not _a:
+        return False
+    r = _REPLAY
+    with r["lock"]:
+        if r["in"] and r["in"][-1] == _u and r["out"][-1] == _a:
+            return False
+        r["in"].append(_u[-_REPLAY_MAX_CHARS:])
+        r["out"].append(_a[-_REPLAY_MAX_CHARS:])
+        r["n"] += 1
+        if len(r["in"]) > _REPLAY_CAP:
+            r["in"] = r["in"][-_REPLAY_CAP:]
+            r["out"] = r["out"][-_REPLAY_CAP:]
+        if r["idx"] > len(r["in"]) - 1:
+            r["idx"] = len(r["in"]) - 1
+    return True
+
+
+def _idle_train_loop(owner):
+    """挂在后台的温习机器人: 只要小方还开着、又没在对话/训练/预热, 就拿回放样本
+    反复反向传播, 一遍遍磨「给定问题 → 该怎么答」的路由与生成能力, 直到收敛;
+    每 N 步把主权重 + 回放一起写回那唯一的训练 NPZ。纯后台、纯 daemon、绝不冒泡。"""
+    last_dump = 0
+    while not _EXIT_FLAG.wait(0.0):            # is_set() 为假 → 继续温习
+        try:
+            if not TRAIN_ENABLED:
+                _EXIT_FLAG.wait(1.0)
+                continue
+            tr = getattr(owner, "transformer", None)
+            if tr is None or not getattr(tr, "bank", None):
+                _EXIT_FLAG.wait(1.0)
+                continue
+            # ① 让路: 有对话在跑 / 有训练在跑 / 内核预热中 → 等下一拍
+            #    ★v3.9: 读标记也要落进 _GPU_CLAIM —— 与推理侧 _gpu_enter 共用同一把元锁,
+            #      否则这里可能读到"还没人占"的瞬时旧值, 下一步就与正式推理同时摸显卡。 ──
+            with _GPU_CLAIM:
+                _taken = bool(_TRAINQ["busy"] or _WARM["on"] or _CHAT_BUSY["v"])
+            if _taken:
+                _EXIT_FLAG.wait(_IDLE_TRAIN_GAP)
+                continue
+            # ② 取一条样本: 源码语料(学正常中文) 与 对话回放(学怎么答) 按下述规则混着取
+            #           · 回放为空 → 全用源码语料
+            #           · 回放非空 → 按 SRC_TRAIN_BIAS 把一部分温习留给"自己注释里的通畅中文",
+            #             从源头治"生成仍是乱码"; 剩下一份额学会话里的「怎么答」。
+            u = a = None
+            r = _REPLAY
+            with r["lock"]:
+                if r["in"]:
+                    _i = r["idx"] % len(r["in"])
+                    r["idx"] = _i + 1
+                    u, a = r["in"][_i], r["out"][_i]
+            _sp = None
+            # v2.8 修 BUG4: 挂机温习四路轮转 —— 小说语感 / 代码知识 / 源码说人话 三路话语料
+            #   按占比轮着取, 余下份额(回放非空时)用对话回放学「怎么答」。之前只混"源码+回放"
+            #   两路, 110 万字小说语料挂机时一次都没被用上, 专门做的小说训练器只有一键极限训练才生效。
+            _roll = random.random()
+            if u is None or _roll < SRC_TRAIN_BIAS:
+                if _roll < NOVEL_TRAIN_BIAS:
+                    _sp = _novel_sample()
+                elif _roll < NOVEL_TRAIN_BIAS + CODE_TRAIN_BIAS:
+                    _sp = _code_knowledge_sample()
+                else:
+                    _sp = _source_sample()
+            q, ans = None, None
+            if _sp is not None:
+                q, ans = _sp[0], _sp[1]
+            elif a is not None:
+                q, ans = u, a
+            else:
+                _EXIT_FLAG.wait(0.6)
+                continue
+            # ③ 拼训练对(问题侧全 mask, 只学答案 —— 与前台同一口径)
+            if getattr(owner, "_make_train_pair", None) is None:
+                _EXIT_FLAG.wait(1.0)
+                continue
+            pair = owner._make_train_pair(q, ans)
+            if pair is None:
+                _EXIT_FLAG.wait(_IDLE_TRAIN_GAP)
+                continue
+            ids, tgt = pair
+            # ④ 串行 + 同栅栏: 与前台训练/推理绝不并发碰显卡, 做一步真实反向传播
+            #    ★v3.9: 从上面的 ① 到这里隔着"取样本 + 拼训练对"(几十~几百毫秒), 这段时间里
+            #      完全可能正好来了一轮对话 —— 所以这里必须【再确认一次】, 且"确认"与"宣布我占"
+            #      要落在同一把 _GPU_CLAIM 里。旧版只看一眼 ① 就直接 clear 栅栏, 那道空窗正是
+            #      间歇性冻死的现场(两线程同时摸显卡)。抢不到就让路, 绝不硬上。
+            with _TRAIN_LOCK:
+                with _GPU_CLAIM:
+                    if _WARM["on"] or _CHAT_BUSY["v"]:
+                        _claimed = False
+                    else:
+                        _TRAINQ["busy"] = True
+                        _GATE.clear()
+                        _claimed = True
+                if not _claimed:
+                    _EXIT_FLAG.wait(_IDLE_TRAIN_GAP)
+                    continue
+                try:
+                    for _ in range(max(1, int(TRAIN_STEPS_PER_TURN))):
+                        tr.train_step(ids[:-1], tgt)
+                    _IDLE_DONE["steps"] += 1
+                finally:
+                    with _GPU_CLAIM:
+                        _TRAINQ["busy"] = False
+                        _GATE.set()
+            # ⑤ 每 N 步落盘一次(权重 + 回放写进同一 NPZ, 次数与前台训练同频)
+            last_dump += 1
+            if last_dump >= max(1, int(TRAIN_SAVE_EVERY)):
+                last_dump = 0
+                try:
+                    tr.dump_train_state()
+                    _IDLE_DONE["persist"] += 1
+                except Exception:
+                    pass
+            _EXIT_FLAG.wait(_IDLE_TRAIN_GAP)
+        except Exception:
+            _EXIT_FLAG.wait(1.0)          # 温习只是"顺手加 buff", 任何异常都不冒泡不崩主程序
 
 
 def _searchable_subject(text):
@@ -9759,10 +10609,45 @@ class XiaoFang:
             corpus.append(str(_t) + "。" + str(e["b"]))
             for a in _al:
                 corpus.append(a)
+        # v3.4 多语言"翻译器": 用知识库别名搭外文概念→中文(输入) / 中文→外文(输出)映射。
+        #   翻译是"词条级"不是整句 —— 用户用外文提到某个概念, 路由据此真正看懂它；
+        #   输出层再把答案里的中文词条名变回用户语言标注, 做到"用户语言能对上"。
+        self._concept_zh = {}   # 外文别名(小写) → 中文词条名
+        self._concept_en = {}   # 中文词条名 → [外文别名…](按首个字母非中文排序备用)
+        for e in DATA.KNOWLEDGE_BASE:
+            _t = e["t"]
+            for _a in (e.get("a", []) or []) + (e.get("kws", []) or []):
+                _as = str(_a)
+                _has_cjk = any('\u4e00' <= c <= '\u9fff' for c in _as)
+                if _has_cjk or len(_as) < 2:
+                    continue
+                _k = _as.lower()
+                _prev = self._concept_zh.get(_k)
+                if _prev is None or len(_as) > len(_prev):
+                    self._concept_zh[_k] = _t
+                _lst = self._concept_en.setdefault(_t, [])
+                if _as not in _lst:
+                    _lst.append(_as)
         # v0.5 Alpha 2: 人格词库单独读入分词器(不进 n-gram 正文, 避免泄露到中性问答)
         for e in getattr(DATA, "PERSONA_KB", []):
             kb_words.extend(e["kws"])
             kb_words.extend(e.get("r", []))
+        # v3.4: 兜底把 DATA 里所有"kws+name"表(ASCII_ART / PERSONA_KB / 主题表…)里的外文
+        #   关键词也并进翻译映射 —— 例: "pelican" → "一只鹈鹕", 好让路由"听懂"它。
+        for _attr in dir(DATA):
+            _obj = getattr(DATA, _attr)
+            if not isinstance(_obj, (list, tuple)):
+                continue
+            for _e in _obj:
+                if not (isinstance(_e, dict) and _e.get("kws")):
+                    continue
+                _nm = _e.get("name", "")
+                for _a in _e["kws"]:
+                    _as = str(_a)
+                    if any('\u4e00' <= c <= '\u9fff' for c in _as) or len(_as) < 2:
+                        continue
+                    self._concept_zh.setdefault(_as.lower(), (_nm if _nm else _as))
+                    self._concept_en.setdefault(_nm if _nm else _as, []).append(_as)
         # v0.7: 自学习记忆——载入跨会话学到的生词+释义摘要(有界, 启动仅合并不重算)
         self.selfmem = LearnerMemory()
         _br.stage("汇入跨会话学习记忆…", 0.08)
@@ -9781,9 +10666,11 @@ class XiaoFang:
         self.lm.vocab.add(TERMINATOR)   # v1.7: 终止符进词表 → 生成能"输出直到终止符"再收尾
         vocab_list = sorted(self.lm.vocab)
         _br.stage("构建 {} 深度思考引擎 (d_model={}×{}层×{}头)…".format(MODEL_TIER, MODEL_D, MODEL_LAYERS, MODEL_HEADS), 0.5)
-        self.transformer = DeepThinkTransformer(
+        self.transformer = FlphaCore(
             vocab_list, d_model=MODEL_D, n_layers=MODEL_LAYERS, n_heads=MODEL_HEADS,
             ngram_lm=self.lm, ffn_ratio=MODEL_FFN, tie_out=MODEL_TIE)
+        # v1.11 修_误: 把"真正释放 _f32 镜像"的入口登记给内存守门员, 越线时不再空转。
+        _MEM_RELEASE_CB["fn"] = self.transformer.release_f32_cache
         _br.stage("装配检索·数学·代码·自学习·表情…", 0.18)
         self.meter = TokenMeter()
         self.emotion = EmotionAnalyzer(self.tokenizer)
@@ -9851,7 +10738,11 @@ class XiaoFang:
                                        name="xf-kernel-warmup", daemon=True)
                 _th.start()
         except Exception:
-            _GATE.set()
+            # ★v3.9: 线程压根没起来 → 栅栏本该就没人关; 但仍旧按规矩在元锁里放一次行(幂等),
+            #   绝不留下一道谁也没占、却关着的死闸(那会让后面每一轮都白等满 45 秒)。
+            with _GPU_CLAIM:
+                if not _WARM["on"]:
+                    _GATE.set()
 
     def _core_entity(self, user_input, emo, intent, kb_hits, kb_top):
         top = intent["top"]
@@ -10814,7 +11705,7 @@ class XiaoFang:
         # v2.9 提速: 原 12 秒 —— 用户抱怨"思考展示完了, 结果还得等十几秒才出来"。
         #   实测绝大多数检索 1~3 秒就回, 12 秒只是给多后端轮流 fallback 兜的极端值;
         #   收到 7 秒后最坏等待显著变短, 该查到的照样查得到。
-        return _run_with_timeout(_go, timeout=7.0, default=[])
+        return _run_with_timeout(_go, timeout=5.0, default=[])   # P2-20: 7→5s, 少让用户干等
 
     # ---- v1.6 检索修复 ③: 联网不止看摘要, 要"进网页去看", 把正文的字抠出来 ----
     def _html_to_text(self, html, max_chars=1400):
@@ -10912,7 +11803,7 @@ class XiaoFang:
         try:
             # v2.9 提速: 原 15 秒 —— 串行读 2 页、单页 6 秒, 最坏就把 15 秒耗满。
             #   收到 9 秒: 第一页基本能读完, 第二页读不完就退回摘要, 不陪跑。
-            return _run_with_timeout(_go, timeout=9.0, default=results) or results
+            return _run_with_timeout(_go, timeout=6.0, default=results) or results   # P2-19: 9→6s
         except Exception:
             return results
 
@@ -12195,7 +13086,21 @@ class XiaoFang:
         t = (text or "").strip()
         # v2.0: 「鹈鹕骑自行车 / 鹈鹕猛猛蹬」= 真·动态 SVG —— 生成 + 落盘, 参数每次随机,
         #   所以两次画出来不会是同一张。统一走模块级入口, 不再是函数里的 import hack。
-        _ans = pelican_answer(t)
+        # v3.8 (鹈鹕引擎 × Data 库串联): 画面请求进引擎前, 先从 Data 库预取与这条请求
+        #   对齐的知识条目, 把"它应该长什么样"喂给画引擎 —— 于是画引擎不再只凭一句
+        #   "画一只猫"去猜, 而是带着知识库里的描述去构图, 画出来更贴近 Data 库的理解。
+        _kb_text = ""
+        try:
+            for _e in DATA.KNOWLEDGE_BASE or []:
+                if _kb_aligned(t, _e):
+                    _b = (_e.get("b") or "").strip()
+                    if _b:
+                        _kb_text = _b[:120]
+                        break
+        except Exception:
+            _kb_text = ""
+        _probe = (_kb_text + "；" + t) if _kb_text else t
+        _ans = pelican_answer(_probe)
         if _ans:
             return _ans
         subj = self._SCENE_RE.sub("", t, count=1).strip() if self._SCENE_RE.search(t) else t
@@ -13412,7 +14317,10 @@ class XiaoFang:
                       r"(?:天气|气温|温度|预报)", text or "")
         if m:
             cand = m.group(1)
-            if cand not in self._WX_STOP:
+            # v1.11 修气象: 「北京市天气」里 `[\u4e00-\u9fa5]{2,5}` 会先吞掉「北京市」,
+            #   (?:市)? 没字符可配就跳过 → 得「北京市」→ wttr.in/北京市 常 404。去行政后缀。
+            cand = re.sub(r"[市区县省盟]$", "", cand)   # 北京市→北京, 浦东区→浦东
+            if cand and cand not in self._WX_STOP:
                 return cand
         return ""
 
@@ -13427,7 +14335,7 @@ class XiaoFang:
             if r.status_code != 200:
                 return None
             return r.json()
-        return _run_with_timeout(_go, timeout=12.0, default=None)
+        return _run_with_timeout(_go, timeout=6.0, default=None)   # P2-18: 12→6s, 免得"问天气等半天"
 
     @staticmethod
     def _wx_area(data, city):
@@ -13556,7 +14464,9 @@ class XiaoFang:
     _EMO_WORDS = ["开心", "高兴", "快乐", "幸福", "兴奋", "激动", "满足", "感动", "惊喜",
                   "难过", "伤心", "委屈", "焦虑", "紧张", "害怕", "恐惧", "压力", "累",
                   "烦躁", "烦躁", "生气", "愤怒", "气死", "崩溃", "孤独", "寂寞", "失落",
-                  "郁闷", "沮丧", "绝望", "无助", "失眠", "痛苦", "无聊", "烦", "emo", "EMO"]
+                  "郁闷", "沮丧", "绝望", "无助", "失眠", "痛苦", "无聊",
+                  # P1-6: 裸 "烦" 太松 —— "麻烦你" 只是敬语, 也会被当成情绪；换成更具体的情绪表达
+                  "烦人", "好烦", "心烦", "烦死", "emo", "EMO"]
     _EMO_SELF = ["我", "咱", "自己", "心情", "心里", "感受", "情绪", "最近", "今天", "真的", "感觉"]
     _EMO_TASK = ["写代码", "写程序", "写个", "写一个", "作文", "散文", "小说", "诗", "代码",
                  "编程", "实现", "计算", "算一下", "解方程", "方程", "微分", "积分", "导数",
@@ -13610,7 +14520,20 @@ class XiaoFang:
         text = user_input.strip()
         # v2.0: 「鹈鹕骑自行车 / 鹈鹕猛猛蹬 / 鹈鹕在海边骑车」—— 不管怎么问都直接出动态 SVG,
         #   放在最前面, 免得被别的路由抢走。参数每次重新随机, 所以张张不一样。
-        _ans = pelican_answer(text)
+        # v3.8 (鹈鹕引擎 × Data 库串联): 请求进引擎前, 先把 Data 库里对齐的知识正文预取、
+        #   注到画面请求前面 —— 画引擎照着 Data 库的理解去构图, 而不是凭空猜。
+        _kb_text = ""
+        try:
+            for _e in DATA.KNOWLEDGE_BASE or []:
+                if _kb_aligned(text, _e):
+                    _b = (_e.get("b") or "").strip()
+                    if _b:
+                        _kb_text = _b[:120]
+                        break
+        except Exception:
+            _kb_text = ""
+        _probe = (_kb_text + "；" + text) if _kb_text else text
+        _ans = pelican_answer(_probe)
         if _ans:
             return _ans
         # v1.8 Alpha: 「画/写一个<具体事物>」= 文字画面 —— 必须先于创作路由与代码路由,
@@ -13674,6 +14597,17 @@ class XiaoFang:
         _meme_r = self._meme_route(text, emo)
         if _meme_r:
             return _meme_r
+        # ★v3.10 算术直通车 —— 纯算式是"确定性"问题(答案唯一), 必须最先算掉。
+        #   旧版只靠下面 intent["top"]=="math" 那一处, 可它前面还排着 推荐/代码素养/
+        #   TIR 任务解析/反问机制/作文 等一堆启发式路由, 任何一层先一步截胡, 算式就被
+        #   当成"任务/实体/缺参数"处理, 甚至一路漏到联网搜索去搜算式 → 回一句
+        #   "关键词一个都对不上"（用户投诉的原话）。现在凡能归一成纯算式的问句, 就在
+        #   这里当场算完返回, 后面的路由永远看不到它, 从根上堵死这一类误路由。
+        #   注: 情感/网络梗优先于算术是刻意保留的设定(情绪当头时先接情绪)。
+        if _arith_intent(text) or _cn_arith_intent(text):
+            _ar = self.math.answer(text)
+            if _ar:
+                return _terminate_clean(_ar)
         # v1.8 Alpha: 「焦点 = 要推荐」优先于一切"解释这是什么"的翻库路径 ——
         #   用户要的是"好玩的游戏"这种具体答案(具体名称+一句话), 不是"游戏是什么"的定义。
         #   旧写法只在最底部用 _is_recommend 兜底, 且词表漏了"好玩/有什么好", 拦不住。
@@ -13862,6 +14796,27 @@ class XiaoFang:
                 _save_settings_field("FORCE_OFFLINE", v)
                 print(C_REPLY + "✓ 联网: {}".format("强制离线" if v else "允许联网") + "，已永久保存。" + C_RESET)
                 return "ok"
+            if key in ("标点", "emoji", "punct") and val in ("on", "off", "开", "关"):
+                v = (val in ("on", "开"))
+                globals()["USE_PUNCT_EMOJI"] = v
+                _save_settings_field("USE_PUNCT_EMOJI", v)
+                print(C_REPLY + "✓ 标点/emoji 情绪识别: {}，已永久保存。".format("开" if v else "关") + C_RESET)
+                return "ok"
+            if key in ("深度", "深度显示", "deep") and val in ("on", "off", "开", "关"):
+                v = (val in ("on", "开"))
+                globals()["SHOW_DEEP_THINK"] = v
+                _save_settings_field("SHOW_DEEP_THINK", v)
+                print(C_REPLY + "✓ 深度思考打字机: {}，已永久保存。".format("开" if v else "关") + C_RESET)
+                return "ok"
+            if key in ("活泼", "活泼度", "energy"):
+                try:
+                    v = max(0.0, min(2.0, float(val)))
+                    globals()["ENERGY"] = v
+                    _save_settings_field("ENERGY", v)
+                    print(C_REPLY + "✓ 活泼度 → {}，已永久保存。".format(v) + C_RESET)
+                    return "ok"
+                except Exception:
+                    pass
             if key in ("速度", "flash", "speed", "档位"):
                 try:
                     v = max(0, min(3, int(val)))
@@ -13898,6 +14853,9 @@ class XiaoFang:
             ("/off",          "切到不思考(最快)"),
             ("/轮数 4",       "改多轮思考轮数(1 起, 越大想得越细)"),
             ("/情绪 1.5",     "改情绪敏感度(0~3, 越大越共情)"),
+            ("/活泼 1.2",     "改活泼度(0~2, 越大 emoji 和语气越丰富)"),
+            ("/标点 on",      "标点/emoji 算不算情绪信号(on 开 · off 关)"),
+            ("/深度 on",      "深度思考要不要打字机效果(on 开 · off 关)"),
             ("/速度 3",       "改打字速度档位(0 原速 ~ 3 极速)"),
             ("/联网 off",     "强制离线 / 允许联网(on 开 · off 关)"),
             ("/help",         "再看一眼这张菜单"),
@@ -14105,8 +15063,70 @@ class XiaoFang:
             print(C_ERROR + "❓ 未知命令: " + cmd + "，输入 /help 查看。" + C_RESET)
             return "ok"
 
+    def _translate_in(self, text):
+        """v3.4 多语言"翻译器"·输入侧: 把外文里我们认识的概念词换成官方中文词条名,
+        让路由 / 检索 / 神经向量都"看懂"它 —— 比如 "tell me about pelican" → "鹈鹕"。
+        只换"整词命中的外文别名"(词边界), 不动中文、数字、URL 里的裸串; 从长到短替换防截断。"""
+        cm = getattr(self, "_concept_zh", None)
+        if not cm or not text:
+            return text
+        try:
+            _keyed = sorted(cm.items(), key=lambda kv: -len(kv[0]))
+            out = text
+            for _k, _v in _keyed:
+                if len(_k) < 2 or not _is_ascii_alpha(_k[0]):
+                    continue
+                _pat = r"(?<![A-Za-z0-9])" + re.escape(_k) + r"(?![A-Za-z0-9])"
+                if re.search(_pat, out, re.I):
+                    out = re.sub(_pat, _v, out, flags=re.I)
+            return out
+        except Exception:
+            return text
+
+    def _localize_reply(self, answer):
+        """v3.4 多语言"翻译器"·输出侧: 中文答案按用户语言做**双语呈现**。
+        小方没有整句 NMT, 但知道"哪个概念对应哪个外文词" —— 所以诚意做法:
+        用用户语言给一行引导, 再把答案里命中的中文词条名变回用户语言做标注(最多 3 个,
+        防嵌套词条名把正文改了), 正文保留中文。让外文用户至少能对上"它在讲哪个概念"。"""
+        if not answer:
+            return answer
+        lang = getattr(self, "reply_lang", "en") or "en"
+        if lang == "zh":
+            return answer
+        greet = _LANG_GREET.get(lang) or _LANG_GREET["en"]
+        _a = answer
+        try:
+            ce = getattr(self, "_concept_en", None) or {}
+            _done = 0
+            for _w in sorted(ce, key=lambda x: -len(x)):
+                if len(_w) < 2 or _w not in _a:
+                    continue
+                _al = [_x for _x in ce[_w]
+                       if _x and not any('\u4e00' <= cc <= '\u9fff' for cc in _x)]
+                if not _al:
+                    continue
+                _a = _a.replace(_w, "{}（{}）".format(_w, _al[0]), 1)
+                _done += 1
+                if _done >= 3:
+                    break
+        except Exception:
+            pass
+        return greet + "\n" + _a
+
     def process_chat(self, user_input):
         text = (user_input or "").strip()
+        # ── v3.4 多语言: 识别用户语言, 输入翻译成中文给"大脑"看, 输出层按用户语言作答 ──
+        self.q_orig = text
+        self.reply_lang = _detect_lang(text)
+        self.reply_localized = False
+        try:
+            if self.reply_lang != "zh":
+                self.reply_localized = True
+                _t = self._translate_in(text)
+                if _t and _t.strip():
+                    text = _t
+        except Exception:
+            pass
         # v1.8 Alpha: 本轮序号 —— chips 归属标记用它, 保证"这一轮的建议"只跟这一轮绑定
         UI_ST["turn"] = UI_ST.get("turn", 0) + 1
         # v1.0 修复: 一旦进入这句的处理并开始输出(灰思考/蓝回答都是流式), 立即标记 streaming,
@@ -14343,7 +15363,15 @@ class XiaoFang:
         #   老病灶: 有分支拿不准时 return None/"" → 一路穿透成空串 → 屏幕上只剩 "小方:" 前缀,
         #   用户以为"算完了却不回", 直接判定这 AI 很烂。这里兜成"接住 + 追问", 永不沉默。
         if not a or not str(a).strip():
-            a = _catch_all_reply(text)
+            # 语言本地化时 text 已被译成中文 → 抓兜底用原始文本, 保住英文兜底接话
+            _src = getattr(self, "q_orig", text) if getattr(self, "reply_localized", False) else text
+            a = _catch_all_reply(_src)
+        # v3.4 多语言 · 输出层: 用户用外文提问, 答案按用户语言双语呈现(唯一出口, 全路由不漏)
+        try:
+            if getattr(self, "reply_localized", False):
+                a = self._localize_reply(a)
+        except Exception:
+            pass
         return (a, False)
 
     def _out_review_ok(self, text, answer, reviewer=None):
@@ -14490,10 +15518,13 @@ class XiaoFang:
         if 0 < len(b) <= 600:
             parts.append(b)
         elif len(b) > 600:
-            # v2.8: 超长库正文不是"静默丢掉" —— 留一条可见提示, /memory 能看见:
-            #   否则将来塞进长条目也不学、还没任何信号, 像掉进黑洞。
-            self._last_learn_note = ("库正文 {} 字 > 600 上限, 该条长正文未全量进监督目标, 仍按『标题+答案』学".
-                                     format(len(b)))
+            # v2.8 + P0-5: 长正文不再整个丢掉 —— 开头常是主题、结尾常落结论, 取首尾摘要进
+            #   监督目标(真正学到了东西), 并保留 /memory 提示让"学的是摘要"这件事可见。
+            if len(b) > 640:
+                parts.append(b[:400] + "\n……\n" + b[-200:])
+            else:
+                parts.append(b[:600])
+            self._last_learn_note = "库正文 {} 字 > 600 上限, 已取首尾摘要进监督目标".format(len(b))
         return "。".join(x.strip() for x in parts if x and x.strip()).strip()
 
     def _kb_gap_words(self, text, hits):
@@ -14573,6 +15604,42 @@ class XiaoFang:
         except Exception:
             pass
 
+    def _make_train_pair(self, text, answer):
+        """v3.3: 把一轮「问题 → 答案」拼成训练对 (ids, tgt)。
+
+        与旧 _train_turn 内的拼法逐字符同构: 问题保底留 cap 的 3/4, 答案吃剩余额度,
+        </s> 属问题侧, 问题侧全填 IGNORE_INDEX —— 前台训练与后台温习共用同一口径, 少一份歧义。
+        拼不出来(空/太短/全 OOV 同 id)返回 None。"""
+        tr = getattr(self, "transformer", None)
+        if tr is None:
+            return None
+        try:
+            cap = max(6, int(TRAIN_MAX_SEQ))
+            q_toks = self.tokenizer.tokenize(text or "")
+            a_toks = self.tokenizer.tokenize(answer or "")
+            _q_room = max(4, int(cap * 0.75))
+            if len(q_toks) > _q_room:
+                q_toks = q_toks[:_q_room]
+            toks = q_toks + ([TERMINATOR] if answer else []) + a_toks
+            toks = toks[:cap]
+            if len(toks) < 4:
+                return None
+            # P1-4/5: </s> 是问题侧的最后一个 token, 它的预测目标是答案的第一个 token ——
+            #   它不能被 mask(否则"问题→答案"这一跳白学); 同时截断后必须按实际 toks 重算
+            #   n_query, 避免 len(tgt) 不够时把问题侧漏进 loss。
+            n_query = min(len(q_toks), max(0, len(toks) - 1))
+            ids = [tr.token2id.get(t, 0) for t in toks]
+            if len(set(ids)) < 2:
+                return None
+            tgt = list(ids[1:])
+            for i in range(n_query):
+                tgt[i] = IGNORE_INDEX
+            if not any(t >= 0 for t in tgt):
+                return None
+            return (ids, tgt)
+        except Exception:
+            return None
+
     def _train_turn(self, text, answer=None):
         """v1.8 Alpha: 一轮在线反向传播。返回 {"loss","gnorm","steps"} 或 None。
 
@@ -14639,34 +15706,17 @@ class XiaoFang:
                 pass
         self._last_learn_cos = _cos
         try:
-            cap = max(6, int(TRAIN_MAX_SEQ))
-            # ══ v3.1: 长问题不截成"前几个字" ══
-            #   旧版直接把 [问 + </s> + 答] 整条按 TRAIN_MAX_SEQ 从**尾巴**裁 —— 问题长一点,
-            #   前半个问题就没了, 模型只能看着半句学。现在: 问题先保底留够(cap 的 3/4),
-            #   再让答案侧吃剩下的额度; 两侧都裁只裁各自的多余部分, 谁也不吞谁。
-            q_toks = self.tokenizer.tokenize(text or "")
-            a_toks = self.tokenizer.tokenize(learn_answer or "")
-            _q_room = max(4, int(cap * 0.75))
-            if len(q_toks) > _q_room:
-                q_toks = q_toks[:_q_room]
-            n_query = len(q_toks) + (1 if learn_answer else 0)   # 含 </s> 分隔符(它算问题侧)
-            toks = q_toks + ([TERMINATOR] if learn_answer else []) + a_toks
-            toks = toks[:cap]
-            if len(toks) < 4:
-                return None
-            ids = [tr.token2id.get(t, 0) for t in toks]
-            if len(set(ids)) < 2:
-                return None
-            # ── v3.1: 目标侧 —— 问题侧全 mask, 只留答案 ──
-            tgt = list(ids[1:])
-            for i in range(min(n_query, len(tgt))):
-                tgt[i] = IGNORE_INDEX
-            if not any(t >= 0 for t in tgt):
+            # v3.3: 统一交 _make_train_pair 拼训练对(与后台温习同一口径)
+            pair = self._make_train_pair(text, learn_answer)
+            if pair is None:
                 self._last_learn_skip = "这一轮只有问题、没有答案"
                 return None
+            ids, tgt = pair
             info = None
-            for _ in range(max(1, int(TRAIN_STEPS_PER_TURN))):
-                info = tr.train_step(ids[:-1], tgt) or info
+            # v3.3: 与后台温习串行, 绝不并发改同一批训练权重
+            with _TRAIN_LOCK:
+                for _ in range(max(1, int(TRAIN_STEPS_PER_TURN))):
+                    info = tr.train_step(ids[:-1], tgt) or info
             # 每 N 轮落盘一次, 免得每轮都写盘拖慢速度
             self._train_turns = getattr(self, "_train_turns", 0) + 1
             if self._train_turns % max(1, int(TRAIN_SAVE_EVERY)) == 0:
@@ -14749,9 +15799,13 @@ class XiaoFang:
            主线程画的秒表不算活着 —— 否则永远判不出卡。
         5) 非阻塞输入 —— 思考期用户打的字进队列排队, /stop 软中止当前回答。
         """
-        # ── ⓪ v2.2: 进显卡前先过"预热栅栏" —— 预热线程没收工就等它(最多 30 秒),
-        #       绝不与它同时碰显卡; 预热早已收工则这里瞬间返回, 零开销。 ──
-        _wait_warm_gate(30.0)
+        # ── ⓪ v2.2/v3.9: 进显卡前先过"显卡闸门" —— 预热线程 / 后台温习没收工就等它(最多 45 秒),
+        #       绝不与它同时碰显卡; 没人占则这里瞬间返回, 零开销。
+        #       ★v3.9: 这里是 _gpu_enter 而不是旧的 _wait_warm_gate —— 差别在于"确认没人占"与
+        #       "宣布我占"在同一把 _GPU_CLAIM 里一次做完, 不会留下"看的时候空着、看完别人已经
+        #       占上"的那几毫秒空窗(那段空窗正是间歇性冻死的根因, 见 9806 行)。
+        #       返回的 _gen 是本轮代次号, 收工时按代次交还(见 _gpu_leave)。 ──
+        _gen = _gpu_enter(45.0)
         # ── ⓪⁻ v3.0: 每轮开工前过一次内存红线守门员(Lite ≤5GB / Ultra ≤7GB) ──
         #   上一轮网页学习/权重镜像攒下的常驻内存, 该交的在这里就交掉, 让这一轮
         #   绝不在红线上起跑 —— 用户要的"内存压到极小", 靠的就是每轮这道闸。
@@ -14778,21 +15832,32 @@ class XiaoFang:
                 "我仍在后台接着把它算出来；你也可以 /stop 打断，或直接发下一句。".format(_pms / 1000.0), C_DEEP)
 
         def _work():
+            # ★v3.9: 这一轮的显卡所有权已在进入本函数时由 _gpu_enter 拿到(见上面的 _gen),
+            #   这里不再重复"抬手立标记"。收工时按【代次】交还 —— 若此刻已经是新一轮在跑,
+            #   _gpu_leave 不会把它的占用误撤销(否则后台温习会趁虚而入, 又变成两线程同摸显卡)。
             try:
                 self.process_chat(text)
             except Exception:
                 got["err"] = True
             finally:
                 got["done"] = True
+                _gpu_leave(_gen)
 
         w = threading.Thread(target=_work, daemon=True)
         self._active_worker = w
-        w.start()
+        try:
+            w.start()
+        except Exception:
+            # 线程起不来也绝不能把显卡所有权漏在自己手里(否则此后每一轮都要白等 45 秒)
+            _gpu_leave(_gen)
+            _SYS_BUSY["v"] = False
+            self._print_note("⚠ 这一轮没把计算线程拉起来，再发一次就好。", C_DEEP)
+            return
         t0 = time.time()
         while not got.get("done"):
             now = time.time()
             # —— v1.8 Alpha: 层进度不再由主线程按时间凑 —— worker 每过一层都亲自写
-            #   UI_ST["layer"](见 DeepThinkTransformer.forward), 这里只负责把面板/秒表画出来,
+            #   UI_ST["layer"](见 FlphaCore.forward), 这里只负责把面板/秒表画出来,
             #   绝不自己再 +1, 于是「第 x/15 层」是真数, 不再是 0.15 秒一格凑出来的假动画。——
             if UI_ST["capture"]:
                 if UI_ST.get("live"):
@@ -14812,6 +15877,7 @@ class XiaoFang:
                     if nxt in ("/stop", "stop", "停", "算了", "！", "!"):
                         self._cancel_seen = True
                         self._skip_deliver = True
+                        _ABORT_TYPING["v"] = True    # v2.8 修 P0 取消: 让 worker 的生成循环当场停手, 不再烧卡算完
                         self._print_note("\n（收到『/stop』，这条我就不答了，等你下一句）", C_HINT)
                     elif nxt in ("/fold", "fold"):
                         UI_ST["fold"] = not UI_ST["fold"]     # v1.4: F7/点击 ⇄ 展开/折叠面板
@@ -14833,11 +15899,15 @@ class XiaoFang:
                     "\n⚠ 已连续 {:.0f} 秒没有任何新输出(真心跳停了)，可能是真卡住了(联网/网页读取最容易卡)。"
                     "小方先让开，你可以直接输入新消息，或输入 /stop 打断它。".format(_quiet), C_DEEP)
                 _SYS_BUSY["v"] = False
+                # ★v3.9: 这里【故意不】交还显卡 —— 判"卡住"只是主线程不再等它, worker 其实还
+                #   活着。所有权就留在它手里: 下一轮 _gpu_enter 会老实地等它收工, 于是"上一轮
+                #   还没算完、这一轮又挤上来"的并发摸显卡不会发生; 它一收工, _work 的 finally 自会交还。
                 return
             # v1.8 Alpha: 步长收紧到 0.06s —— 秒表行按秒跳、心跳一停也能很快被抓到,
             #   轮询本身几乎不吃 CPU(只读几个浮点数, 不碰引擎)。
             time.sleep(0.06)
         _SYS_BUSY["v"] = False         # 思考结束, 恢复画调色板
+        _gpu_leave(_gen)               # ★v3.9 兜底: 走到这里本轮必已收工(重复交还无副作用, 且只认代次)
         # —— v1.4: 回答(打字机)已在 worker 打完后, 于状态面板之下补"学习因子"一行 ——
         if not got.get("cancel") and not got.get("err"):
             try:
@@ -14854,15 +15924,236 @@ class XiaoFang:
         if got.get("err"):
             self._print_note("⚠ 小方处理这条时出了点小插曲，重新发送一下就好。", C_DEEP)
 
+    def _shutdown(self):
+        """v3.3: 全程序唯一退出出口。
+
+        置退出旗标 → 后台温习/读线程各自收工(全部 daemon, 置位后即刻让路不再训练) →
+        记忆 + 主权重 + 对话回放 全量落盘到同一个 NPZ → 主线程随 run 收尾即进程彻底结束。
+        调用后不会再有任何后台残留 —— 也不会被人当成"掖着个进程的病毒"。"""
+        _EXIT_FLAG.set()
+        try:
+            self.selfmem.commit()           # 学习记忆落盘
+        except Exception:
+            pass
+        try:
+            tr = getattr(self, "transformer", None)
+            if tr is not None and getattr(tr, "bank", None):
+                tr.dump_train_state()       # 主权重 + 对话回放(同一 NPZ, 此时全部落盘)
+                _IDLE_DONE["persist"] += 1
+        except Exception:
+            pass
+        print(C_HINT + "  [已落盘: 记忆 + 训练权重 + {} 条对话回放 → XF_TRAIN NPZ]".format(
+            len(_REPLAY["in"])) + C_RESET)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # v1.11 · 一键极限训练(由「启动小方训练.bat」/ XIAOFANG_TRAIN=on 触发)
+    #   boot 全部复用(XiaoFang.__init__ 已完成预热): 只是不进聊天 REPL, 改成连续
+    #   "取样本 → 反向传播 → 落盘" 的拉满循环。CPU/GPU 步间零间隔, 内存稳在 lite
+    #   硬顶 5.0GB 红线内(启动脚本锁 XF_TIER=lite, 天然 <6GB)。Ctrl+C → 全量落盘退出。
+    # ══════════════════════════════════════════════════════════════════════
+    def _train_corpus_batch(self, k=4):
+        """把连续 k 条源码中文语料并成一条长答案 —— 一个训练步跨越多句, 吞吐最大化。"""
+        pool = _source_pool()
+        if not pool:
+            return ""
+        parts = []
+        for _ in range(k):
+            _SRC_IDX["i"] = (_SRC_IDX["i"] + 1) % len(pool)
+            parts.append(pool[_SRC_IDX["i"]])
+        return "。\n".join(parts)
+
+    def _train_only_pair(self, q, a):
+        """极限模式专用拼对: 窗宽用 _TRAIN_SEQ_CAP(启动脚本已开大), 支持长答案。
+        问题侧全 mask、只学答案 —— 与 _make_train_pair 同构, 只是窗宽由启动脚本上头。"""
+        tr = self.transformer
+        cap = _TRAIN_SEQ_CAP
+        qt = self.tokenizer.tokenize(q or "")[:_TRAIN_SEQ_CAP // 2]
+        at = self.tokenizer.tokenize(a or "")[:_TRAIN_SEQ_CAP]
+        toks = qt + ([TERMINATOR] if a else []) + at
+        toks = toks[:cap]
+        if len(toks) < 4:
+            return None
+        ids = [tr.token2id.get(t, 0) for t in toks]
+        if len(set(ids)) < 2:
+            return None
+        tgt = list(ids[1:])
+        nq = len(qt) + (1 if a else 0)
+        for i in range(min(nq, len(tgt))):
+            tgt[i] = IGNORE_INDEX
+        if not any(t >= 0 for t in tgt):
+            return None
+        return (ids, tgt)
+
+    def train_only(self, minutes=0.0):
+        """一键极限训练主循环。minutes<=0 → 一直跑到 Ctrl+C / 关窗。"""
+        import time as _t
+        tr = getattr(self, "transformer", None)
+        if tr is None or not getattr(tr, "bank", None):
+            print(C_HINT + "  [!] 模型未就绪，无法进入训练模式。" + C_RESET)
+            return
+        print()
+        print(C_HINT + " 🚀 一键极限训练已启动 ── XF_TIER={} · 训练窗 {} · 步间隔 {}s".format(
+            XF_TIER, _TRAIN_SEQ_CAP, TRAIN_ONLY_LOOP_GAP) + C_RESET)
+        print(C_HINT + "   语料源 = 📖 小说说话(110万字) + 🧠 Data代码区(Python知识) + 📝 源码注释 + 💬 对话回放 · 目标 <6GB(硬顶 {}GB)".format(
+            MEM_HARD_CAP_GB) + C_RESET)
+        print(C_HINT + "   ⏹ 想停下: Ctrl+C → 记忆+权重+回放 全量落盘后退出。" + C_RESET)
+        # 等预热收尾(模型与权重就绪)
+        _tw = 0
+        while _WARM["on"]:
+            _t.sleep(0.2)
+            _tw += 1
+            if _tw % 25 == 0:
+                print(C_HINT + "   预热中… {}s".format(int(_tw * 0.2)) + C_RESET)
+        # ── Covi 1: 真实语料盘点(实测规模, 不是固定文本) ──
+        _novel = _novel_pool()
+        _code = _code_knowledge_pool()
+        _src = _source_pool()
+        _rpl = _REPLAY["in"]
+        print(C_HINT + "   [语料盘点] 小说说话 {} 句 · Data代码区 {} 条 · 源码注释 {} 条 · 对话回放 {} 条 · 累计训练步 {} 步".format(
+            len(_novel), len(_code), len(_src), len(_rpl),
+            getattr(getattr(tr, "bank", None), "steps", 0)) + C_RESET)
+        # ── Covi 1: 极致可视化状态(阶段/进度/速率/圈数全真实) ──
+        #   时间片轮转制: 每阶段固定时长后切换 —— 一圈 11 分钟四类语料都学到,
+        #   不因小说池(24000 句)太大而让代码/源码/回放永远轮不上。
+        _phase_names = ("📖 学习小说说话", "🧠 学习Data代码区", "📝 温习源码注释", "💬 复习对话回放")
+        _ph_budget_sec = (300, 180, 120, 60)   # 小说5分 / 代码3分 / 源码2分 / 回放1分
+        _ph = 0                      # 当前阶段: 0=小说 1=代码 2=源码 3=回放
+        _round = 1                   # 第几圈(四阶段各学一遍 = 一圈)
+        _round_start = _t.time()
+        _ph_start = _t.time()
+        _ph_n = 0                    # 本阶段已学条数
+        _ph_deadline = _t.time() + _ph_budget_sec[_ph]
+        _t0_all = _t.time()
+        _rate = 0.0                  # 真实速率: 条/秒(EMA)
+        _rate_t0 = _t.time()
+        _rate_n = 0
+        _train_save_every = max(50, int(TRAIN_SAVE_EVERY) * 30)   # 训练模式落盘放宽, 不拖慢
+        n = 0
+        last_dump = 0
+        try:
+            while not _EXIT_FLAG.is_set():
+                # —— 轮转取样本: 小说 → 代码 → 源码 → 回放 ——
+                _pair = None
+                if _ph == 0:
+                    _pair = _novel_sample()
+                elif _ph == 1:
+                    _pair = _code_knowledge_sample()
+                elif _ph == 2:
+                    _pair = _source_sample()
+                else:
+                    with _REPLAY["lock"]:
+                        if _REPLAY["in"]:
+                            _i = _REPLAY["idx"] % len(_REPLAY["in"])
+                            _REPLAY["idx"] = _i + 1
+                            _pair = (_REPLAY["in"][_i], _REPLAY["out"][_i])
+                if _pair is None or not _pair[1]:
+                    _ph = (_ph + 1) % 4
+                    continue
+                q, ans = _pair
+                pair = self._train_only_pair(q, ans)
+                if pair is None:
+                    continue
+                ids, tgt = pair
+                # —— 与后台/前台训练共用同一把锁 + 同栅栏, 绝不并发碰权重 ——
+                # ★v3.9: "确认没人占"与"宣布我占"落在同一把 _GPU_CLAIM 里。极限训练模式本无对话,
+                #   这一手是给"预热线程还没彻底收工 / 别的入口恰好插了一轮"留的保险: 抢不到就让开
+                #   这一条, 绝不硬上 —— 两个线程同时摸显卡 = 整个进程冻死(见 9801 行实测教训)。
+                with _TRAIN_LOCK:
+                    with _GPU_CLAIM:
+                        if _WARM["on"] or _CHAT_BUSY["v"]:
+                            _ok = False
+                        else:
+                            _TRAINQ["busy"] = True
+                            _GATE.clear()
+                            _ok = True
+                    if not _ok:
+                        _t.sleep(0.05)
+                        continue
+                    try:
+                        for _ in range(max(1, int(TRAIN_ONLY_STEPS_PER_TURN))):
+                            tr.train_step(ids[:-1], tgt)
+                    finally:
+                        with _GPU_CLAIM:
+                            _TRAINQ["busy"] = False
+                            _GATE.set()
+                n += 1
+                _ph_n += 1
+                _rate_n += 1
+                # —— 真实速率: 每 3 秒用实测样本数重算一次, 滑动平均 ——
+                _now = _t.time()
+                if _now - _rate_t0 >= 3.0:
+                    _inst = _rate_n / max(_now - _rate_t0, 1e-6)
+                    _rate = _inst if _rate <= 0 else 0.7 * _rate + 0.3 * _inst
+                    _rate_t0 = _now
+                    _rate_n = 0
+                # —— 极致可视化: 每步原地刷新, 全部是真实数值 ——
+                _st = getattr(tr, "bank", None)
+                _loss = getattr(_st, "last_loss", "—") if _st else "—"
+                _steps = getattr(_st, "steps", 0) if _st else 0
+                if _ph == 0:
+                    _tot = max(1, len(_novel)); _cur = _NOVEL_IDX["i"] % _tot
+                elif _ph == 1:
+                    _tot = max(1, len(_code)); _cur = _CODE_IDX["i"] % _tot
+                elif _ph == 2:
+                    _tot = max(1, len(_src)); _cur = _SRC_IDX["i"] % _tot
+                else:
+                    _tot = max(1, len(_rpl)); _cur = _REPLAY["idx"] % _tot
+                _pct = int(round(_cur / float(_tot) * 100))
+                _eta = max(0.0, _ph_deadline - _t.time())
+                _eta_s = ("本阶段剩约 {:.0f} 秒".format(_eta) if _eta < 60
+                          else "本阶段剩约 {:.0f} 分 {:.0f} 秒".format(_eta // 60, _eta % 60))
+                _rss = _rss_bytes() / (1024.0 ** 3)
+                _line = ("  {} {} · {} {}% · 第{}圈 · 第{}步 · loss {} · 内存 {:.2f}GB · 预计还需 {}"
+                         .format(_ui_spinner(), _phase_names[_ph], _mini_bar(_cur, _tot),
+                                 _pct, _round, _steps, _loss, _rss, _eta_s))
+                sys.stdout.write("\r" + C_HINT + _line + C_RESET + "\033[K")
+                sys.stdout.flush()
+                # —— 阶段切换: 时间片到点 或 该池已学满一圈 → 真实小结 + 进下一阶段 ——
+                if _t.time() >= _ph_deadline or _ph_n >= _tot:
+                    _ph_used = _t.time() - _ph_start
+                    print()
+                    print(C_HINT + "   ✔ {} 已学 {} 条 · 耗时 {:.0f} 秒 · 累计 {} 步 · loss {}".format(
+                        _phase_names[_ph], _ph_n, _ph_used, _steps, _loss) + C_RESET)
+                    _ph = (_ph + 1) % 4
+                    _ph_start = _t.time()
+                    _ph_deadline = _t.time() + _ph_budget_sec[_ph]
+                    _ph_n = 0
+                    if _ph == 0:
+                        _round += 1
+                        print(C_HINT + "   ── 第 {} 圈开始 · 已训 {:.0f} 秒 · 平均 {:.1f} 条/秒 · 每圈约 {} 分钟 ──".format(
+                            _round, _t.time() - _t0_all, _rate, int(sum(_ph_budget_sec) / 60.0)) + C_RESET)
+                # —— 定期落盘(训练模式放宽, 避免写盘拖慢) ——
+                last_dump += 1
+                if last_dump >= _train_save_every:
+                    last_dump = 0
+                    try:
+                        tr.dump_train_state()
+                        _IDLE_DONE["persist"] += 1
+                    except Exception:
+                        pass
+                if minutes > 0 and (_t.time() - _t0_all) > minutes * 60.0:
+                    print()
+                    print(C_HINT + "   ⏱ 已训练 {:.0f} 分钟, 到达设定时长, 正在收尾落盘…".format(minutes) + C_RESET)
+                    break
+        except KeyboardInterrupt:
+            print()
+            print(C_HINT + "\n   ⏹ 收到停止，正在全量落盘…" + C_RESET)
+        finally:
+            self._shutdown()
+
     def run(self):
         # v1.2: 加载进度在 __init__ 里已全部打完 → 就绪后清空整屏, 从最上方干净展示。
         # 输入改为独立读线程 + 信箱(deque): 思考/回答期间用户仍可打字, 进队列排队或 /stop 打断。
         _cls()
         show_startup()
         _enable_console_mouse()      # v1.4: 支持点击展开/折叠思考面板
+        _xf_web_emit("ready", "{} · {}".format(VERSION, MODEL_TIER))   # v3.4: 告诉网页"我这就能聊了"
         import collections as _col
         mailbox = _col.deque()
         deferred = []
+        # v3.3: 挂后台温习机器人 —— 空闲就拿回放样本反复反向传播(见 _idle_train_loop)
+        threading.Thread(target=_idle_train_loop, args=(self,),
+                         name="xf-idle-train", daemon=True).start()
 
         def _reader():
             global _read_prompt_pending
@@ -14873,11 +16164,28 @@ class XiaoFang:
                 except (EOFError, KeyboardInterrupt):
                     mailbox.append(None)
                     return
+                if line and not line.startswith("/"):
+                    # v3.4: Web 托管时把用户这句原样抄给网页。
+                    #   斜杠命令不算"说话" —— 那些由 _main_loop 当 cmd 发,
+                    #   否则 /off、/think 这些会冒充用户消息冒到对话气泡里(实测踩过)。
+                    _xf_web_emit("user", line)
                 mailbox.append(line)
                 _read_prompt_pending = True      # 提交一句 → 忙完由主线程画下一句的"你: "
 
         threading.Thread(target=_reader, daemon=True).start()
         # 处理"已排队"的消息(思考期间用户输入的), 避免与命令解析耦合
+        try:
+            self._main_loop(mailbox, deferred)
+        finally:
+            # v3.3: 无论正常 /exit、EOF(关控制台)、还是抛异常退出, 都走这一处收尾
+            _xf_web_emit("bye")          # v3.4: 先跟网页道个别, 再收尾
+            try:
+                self._shutdown()
+            except Exception:
+                pass
+
+    def _main_loop(self, mailbox, deferred):
+        """v3.3: 把 run 的原主循环抽出来, 让 run 用 try/finally 包住 —— 任何退出都先收尾。"""
         while True:
             if deferred:
                 item = deferred.pop(0)
@@ -14890,10 +16198,11 @@ class XiaoFang:
                     continue
             if item is None:
                 print(C_REPLY + "👋 小方再见～" + C_RESET)
-                break
+                return
             if not item:
                 continue
             if item.startswith("/"):
+                _xf_web_emit("cmd", item)        # v3.4: 斜杠命令也照抄一份给网页
                 if self.handle_command(item) == "exit":
                     break
             else:
@@ -14906,6 +16215,11 @@ class XiaoFang:
                     print()
                     continue
                 self.run_with_timeout(item, mailbox=mailbox, deferred=deferred)
+                # v3.4: 这一轮真答完了 —— 给网页报一声 idle, 那边的"思考中"就靠它灭掉。
+                #   判据用"信箱和排队队列都空"这么实的东西, 不靠计时、不靠猜:
+                #   只要还有别人排着队, 就不算闲, 报早了网页会以为答完了。
+                if not mailbox and not deferred:
+                    _xf_web_emit("idle")
 
 
 if __name__ == "__main__":
@@ -14919,4 +16233,7 @@ if __name__ == "__main__":
     print(C_HINT + "   加速 → 分块反量化双缓冲流水: {}".format(
         "CPU 与 GPU 并行(前台算这一块, 后台备下一块)" if CPU_GPU_PARALLEL
         else "CPU 上反量化与矩阵乘重叠流水(未检测到独显)") + C_RESET, flush=True)
-    XiaoFang().run()
+    if os.environ.get("XIAOFANG_TRAIN", "").strip().lower() in ("1", "on", "yes", "train"):
+        XiaoFang().train_only()
+    else:
+        XiaoFang().run()

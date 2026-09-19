@@ -5,9 +5,22 @@ __pycache__/
 # 首次启动自检留下的环境记号（本机生成，不该进仓库）
 .xf_env_ok
 
-# IDE 工程文件
+# 训练出来的权重（几十 MB 的二进制，本机产物，不进仓库）
+*.npz
+*.npz.bak*
+*.npz.good_*
+*.npz.corrupt_*
+
+# 冻结权重的磁盘缓存（2.3GB，本机生成，绝不进仓库）
+权重缓存/
+
+# 运行时数据
+Web对话/
+Web界面/_port.txt
+背景图/
+xiaofang_memory.json
+
+# 编辑器 / 工具产物
 .idea/
 .vscode/
-
-# 运行期权重缓存（单个 2.4GB，可自动重建，绝不入库；正式权重走 xiaofang_train_covi1_*.npz）
-权重缓存/
+.trae-html-share-packages/

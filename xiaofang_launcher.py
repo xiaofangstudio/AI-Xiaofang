@@ -28,11 +28,13 @@ import os
 import re
 import sys
 import glob
+import hashlib
 import platform
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "xiaofang_covi1.py")
+WEB = os.path.join(HERE, "xiaofang_web.py")     # Web 启动方式的转接口（外挂的那一个 py）
 CACHE_DIR = os.path.join(HERE, "权重缓存")
 HIST_DIR = os.path.join(HERE, "历史版本")
 # 环境体检通过之后留个记号（第一行是解释器路径），
@@ -48,14 +50,25 @@ DEP_MODULES = [
     ("psutil", "psutil"),
     ("requests", "requests"),
     ("bs4", "beautifulsoup4"),
+    ("flask", "flask"),          # 只有 Web 启动方式要用，但一起体检掉，免得切 Web 时才报缺
 ]
+
+# 依赖清单的指纹。记号文件里也存一份 —— 以后只要往 DEP_MODULES 里加一样东西，
+# 指纹就跟着变，下次启动会自动重新体检补齐。
+# （flask 当初就是这么漏掉的：记号是清单还没它的时候落的，.bat 一看记号在就
+#   跳过整套自举，于是新加的依赖永远等不到安装。指纹就是补这个洞的。）
+DEP_SIG = hashlib.md5(
+    ("|".join("%s=%s" % (m, p) for m, p in DEP_MODULES)).encode("utf-8")
+).hexdigest()[:8]
 
 # —— 三档：dim / 头数 / 层数要跟主程序里的 _MODEL_TIERS 对齐 ——
 #   dim 同时也是权重缓存文件名里的那段 d<dim>，用它判断"这档有没有现成权重"。
+# v3.8: 三档拉开 —— Lite≈2.07B(更快更省) / Pro≈2.40B / Ultra≈2.50B, 参数真正阶梯化。
+#   注意 dim 同时也是权重缓存文件名里的那段 d<dim>, 用它判断"这档有没有现成权重"。
 TIERS = [
-    dict(key="lite",  no="1", name="Lite",  dim=3584, params="2.40B", heads=28, layers=15,
+    dict(key="lite",  no="1", name="Lite",  dim=3328, params="2.07B", heads=26, layers=15,
          tag="最快 · 日常聊天、随口问问，秒回"),
-    dict(key="pro",   no="2", name="Pro",   dim=3648, params="2.48B", heads=32, layers=15,
+    dict(key="pro",   no="2", name="Pro",   dim=3584, params="2.40B", heads=28, layers=15,
          tag="更聪明 · 想得更深、意图识别更准"),
     dict(key="ultra", no="3", name="Ultra", dim=3660, params="2.50B", heads=30, layers=15,
          tag="最深度 · 复杂长题、要多想几轮最稳"),
@@ -118,8 +131,43 @@ def banner():
     print()
 
 
-def menu(cached):
+def mode_menu():
+    """首层：先问"用哪种方式启动小方"。
+
+    默认 CLI —— 什么都不按就回车，落回 1（CLI 更成熟，贯穿诸多代）。
+    """
     banner()
+    print("   请选择启动方式，输入数字后回车：" + RESET)
+    print()
+    print("   " + C_HOT + "1" + RESET + "   " + _pad("命令行 CLI", 12)
+          + C_DIM + "默认 · 原汁原味的终端窗口，键位最全，老版本也都走这条路" + RESET)
+    print("   " + C_HOT + "2" + RESET + "   " + _pad("Web 界面", 12)
+          + C_DIM + "本地开个端口，像应用一样单独弹一个窗口（不是浏览器标签页）" + RESET)
+    print("        " + C_DIM + "└ 现代拟物 · 模型三级下拉 · 思考强度滑块 · 历史对话" + RESET)
+    print()
+    print("   " + C_DIM + "直接回车 = 1 (CLI)   ·   输入 q 退出" + RESET)
+    print()
+    while True:
+        try:
+            raw = input("   " + C_HOT + "请选择 ❯ " + RESET)
+            raw = raw.replace("\ufeff", "").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if raw in ("q", "quit", "exit", "退出"):
+            return None
+        if raw == "":
+            return "cli"
+        if raw in ("1", "cli", "命令行", "终端", "cmd"):
+            return "cli"
+        if raw in ("2", "web", "网页", "界面"):
+            return "web"
+        print("   " + C_WARN + "请输入 1 或 2（直接回车 = 1，q 退出）。" + RESET)
+
+
+def menu(cached, head=True):
+    if head:
+        banner()
     print("   请选择要启动的版本，输入数字后回车：" + RESET)
     print()
     for t in TIERS:
@@ -469,8 +517,38 @@ def write_marker(arch):
             f.write(sys.executable + "\n")
             f.write(platform.python_version() + "\n")
             f.write(arch + "\n")
+            f.write(DEP_SIG + "\n")      # 第 4 行：依赖清单指纹，见 DEP_SIG
     except Exception:
         pass
+
+
+def deps_stale():
+    """记号文件里那份依赖指纹，和现在这份清单对不上吗？
+
+    对不上有两种可能：① 旧记号（还没写指纹，比如 flask 漏装那会儿留下的）；
+    ② 清单后来加过东西。两种情况都该重新体检一遍，所以返回 True。"""
+    try:
+        with open(MARKER, "r", encoding="utf-8", errors="replace") as f:
+            lines = [x.strip() for x in f.read().splitlines()]
+    except Exception:
+        return False                 # 没记号文件 = .bat 那边会走完整自举，这里不用管
+    return len(lines) < 4 or lines[3] != DEP_SIG
+
+
+def dep_guard():
+    """启动前的最后一道闸：依赖缺了、或者清单变过，就地补齐 + 更新记号。
+
+    早先这套只在「首启自举」里跑，而 .bat 一看到记号在就整段跳过 ——
+    新加的依赖因此永远等不到安装（flask 就是这么漏的）。现在每次启动
+    都过一遍这道闸，代价只是 import 几个模块。"""
+    if not missing_deps() and not deps_stale():
+        return True
+    print()
+    print("   " + C_DIM + "顺手核对一下依赖…" + RESET)
+    ok = ensure_deps()
+    if ok:
+        write_marker(machine_info()[0])     # 指纹跟着刷新，下次就不用再补
+    return ok
 
 
 def bootstrap():
@@ -489,6 +567,9 @@ def bootstrap():
     print("   位置    " + C_DIM + sys.executable + RESET)
     if not os.path.isfile(ENGINE):
         print("   主程序  " + C_WARN + "缺失：" + ENGINE + RESET)
+        print()
+        print("   " + C_WARN + "主程序不存在，没法启动。先把 xiaofang_covi1.py 放回这个目录再试。" + RESET)
+        return 3        # P3-5: 缺主程序就别往下发了，直接给错误码
     print()
 
     ok = ensure_deps()
@@ -534,15 +615,64 @@ def launch(tier, pause=True):
     return rc
 
 
+def launch_web(pause=True):
+    """走 Web：把转接口拉起来，它会自己开端口 + 单独弹一个应用窗口。
+
+    这里不再问档位 —— 选模型这一步在网页下方那排上拉菜单里选，
+    所以先从默认档（Lite）起，进页面之后随时切。
+    """
+    if not os.path.isfile(WEB):
+        print("   " + C_WARN + "找不到 Web 转接口：" + WEB + RESET)
+        return 2
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    print()
+    print("   " + C_OK + "▶ 正在拉起 Web 界面 …" + RESET)
+    print("   " + C_DIM + "  会在本机开一个口子，然后单独弹一个窗口（不是浏览器标签页）。" + RESET)
+    print("   " + C_WARN + "  稍后可能看到命令提示符窗口启动，那是本地 AI 运行窗口，请不要关。" + RESET)
+    print("   " + C_DIM + "  关掉网页窗口，它就跟着退了。" + RESET)
+    print()
+    rc = 0
+    try:
+        rc = subprocess.call([sys.executable, WEB, "--from-launcher"], cwd=HERE, env=env)
+    except KeyboardInterrupt:
+        print()
+        print("   " + C_DIM + "已中断。" + RESET)
+        rc = 130
+    if pause:
+        print()
+        try:
+            input("   " + C_DIM + "小方已退出。按回车关闭本窗口…" + RESET)
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return rc
+
+
 def main(argv):
     _fix_console()
     args = argv[1:]
     pause = "--no-pause" not in args
+    reinstall = "--reinstall-env" in args
     args = [a for a in args if a not in ("--no-pause", "--reinstall-env")]
+
+    # P1-7: --reinstall-env = 强制重做环境自检/补齐依赖 —— 先废掉"已自检"记号,
+    #   并当场立刻跑一遍 bootstrap, 不再被"记号在就跳过"挡住。
+    if reinstall:
+        try:
+            os.remove(MARKER)
+        except Exception:
+            pass
+        return bootstrap()
 
     # 首启自检：.bat 在这一步通过之后才会放出 1/2/3 菜单
     if args and args[0] in ("--bootstrap", "bootstrap", "自检"):
         return bootstrap()
+
+    # 每次启动都过一遍依赖闸：缺了就地补，清单变过也补。
+    # —— 早先只有「首启自举」才体检，.bat 一看记号在就跳过，flask 因此漏装。
+    elif not (args and args[0] in ("-h", "--help", "帮助", "--check", "check", "体检")):
+        dep_guard()
 
     cached = cached_dims()
 
@@ -568,9 +698,15 @@ def main(argv):
     if args:
         a = args[0]
         if a in ("-h", "--help", "帮助"):
-            print("用法： python xiaofang_launcher.py [1|2|3|4|lite|pro|ultra|hist] [--check] [--bootstrap] [--no-pause]")
+            print("用法： python xiaofang_launcher.py [1|2|3|4|lite|pro|ultra|hist|web] [--check] [--bootstrap] [--no-pause]")
+            print("      不带参数 = 先问启动方式（1=CLI 默认 / 2=Web）")
+            print("      web/--web = 直接走 Web 界面（模型在网页里选）")
             print("      1=Lite  2=Pro  3=Ultra  4/--hist=历史版本（三层页面）")
             return 0
+        if a in ("--web", "web", "网页", "界面"):
+            if not ensure_deps():
+                return 3
+            return launch_web(pause=pause)
         if a in ("--hist", "--history", "hist", "history", "历史", "历史版本"):
             if not ensure_deps():
                 return 3
@@ -590,7 +726,18 @@ def main(argv):
     # 主菜单循环：从历史版本里「0 / b」退回来时会重新弹主菜单，
     # 不会直接把窗口关掉，用户可以接着挑别的档位。
     while True:
-        t = menu(cached)
+        # 第一层：先定启动方式（CLI / Web），什么都不按就回车 = CLI
+        mode = mode_menu()
+        if mode is None:
+            print("   " + C_DIM + "已取消，没有启动。" + RESET)
+            return 0
+        if mode == "web":
+            if not ensure_deps():
+                return 3
+            return launch_web(pause=pause)
+
+        # 第二层：CLI 才继续问档位 / 历史版本
+        t = menu(cached, head=False)
         if t is None:
             print("   " + C_DIM + "已取消，没有启动。" + RESET)
             return 0

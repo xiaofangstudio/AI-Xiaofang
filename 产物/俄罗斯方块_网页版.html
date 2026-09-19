@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<!-- 示例产物 · 俄罗斯方块（单文件，零依赖，双击即可玩）
+     ← → 移动 · ↑ 旋转 · ↓ 加速 · 空格 直落 · R 重开 -->
+<head>
+<meta charset="utf-8">
+<title>俄罗斯方块 · 产物示例</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:radial-gradient(1200px 700px at 50% -10%,#f4f6fd,#e2e6f1);
+       font-family:"Segoe UI",system-ui,sans-serif;color:#14171c}
+  .wrap{display:flex;gap:22px;align-items:flex-start}
+  canvas{background:#eef0f4;border-radius:14px;box-shadow:0 18px 44px rgba(21,26,38,.16),0 4px 12px rgba(21,26,38,.08)}
+  aside h1{font-size:17px;margin:0 0 4px}
+  aside p{margin:2px 0;font-size:13px;color:#5b6270}
+  .next{width:96px;margin-top:12px}
+  .btn{margin-top:14px;border:0;border-radius:999px;padding:9px 18px;cursor:pointer;
+       background:#4d6bfe;color:#fff;font-size:13px;box-shadow:0 8px 20px rgba(77,107,254,.35)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="bd" width="240" height="480"></canvas>
+  <aside>
+    <h1>俄罗斯方块</h1>
+    <p>← → 移动 · ↑ 旋转 · ↓ 加速</p>
+    <p>空格 直落 · R 重开</p>
+    <p id="sc">得分 0 · 行数 0</p>
+    <canvas id="nx" class="next" width="96" height="64"></canvas>
+    <button class="btn" onclick="restart()">重开一局</button>
+  </aside>
+</div>
+<script>
+const COLS=10, ROWS=20, PX=24;
+const SHAPES=[[[1,1,1,1]],
+  [[1,1],[1,1]],
+  [[0,1,0],[1,1,1]],
+  [[1,0,0],[1,1,1]],
+  [[0,0,1],[1,1,1]],
+  [[0,1,1],[1,1,0]],
+  [[1,1,0],[0,1,1]]];
+const COLORS=['#4d6bfe','#f4b740','#8e5cf7','#e5484d','#23a55a','#38a3d8','#f97316'];
+const bd=document.getElementById('bd'),nx=document.getElementById('nx'),sc=document.getElementById('sc');
+const g=bd.getContext('2d'),gn=nx.getContext('2d');
+let grid,cur,curColor,nxt,score,rows,over;
+
+function empty(){return Array.from({length:ROWS},()=>Array(COLS).fill(null));}
+function rotate(m){return m[0].map((_,c)=>m.map(r=>r[c]).reverse());}
+function newPiece(){return {sh:SHAPES[Math.floor(Math.random()*SHAPES.length)],x:3,y:0};}
+
+function resetAll(){
+  grid=empty();nxt=newPiece();score=0;rows=0;over=false;spawn();draw();update();
+}
+function spawn(){
+  cur=Object.assign({},nxt);curColor=COLORS[Math.floor(Math.random()*COLORS.length)];
+  nxt=newPiece();
+  if(collide(cur.sh,cur.x,cur.y))over=true;
+}
+function collide(sh,x,y){
+  for(let r=0;r<sh.length;r++)for(let c=0;c<sh[r].length;c++)
+    if(sh[r][c]){const px=x+c,py=y+r;if(px<0||px>=COLS||py>=ROWS)return true;if(py>=0&&grid[py][px])return true;}
+  return false;
+}
+function fix(){
+  for(let r=0;r<cur.sh.length;r++)for(let c=0;c<cur.sh[r].length;c++)
+    if(cur.sh[r][c]){const py=cur.y+r;if(py>=0)grid[py][cur.x+c]=curColor;}
+  let cleared=0;
+  for(let r=ROWS-1;r>=0;r--)if(grid[r].every(v=>v)){grid.splice(r,1);grid.unshift(Array(COLS).fill(null));cleared++;r++;}
+  if(cleared){rows+=cleared;score+=[0,100,300,500,800][cleared];}
+  spawn();draw();
+}
+function drop(){if(collide(cur.sh,cur.x,cur.y+1)){fix();}else{cur.y++;}}
+function step(){if(!over){if(collide(cur.sh,cur.x,cur.y+1))fix();else cur.y++;draw();}}
+function update(){
+  sc.textContent='得分 '+score+' · 行数 '+rows+' · '+(over?'结束，按 R 重开':'');
+}
+function draw(){
+  g.clearRect(0,0,bd.width,bd.height);
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){const v=grid[r][c];if(v)cell(g,c,r,v,1);}
+  if(!over)for(let r=0;r<cur.sh.length;r++)for(let c=0;c<cur.sh[r].length;c++)
+    if(cur.sh[r][c]&&cur.y+r>=0)cell(g,cur.x+c,cur.y+r,curColor,.92);
+  setNext();
+}
+function cell(ctx,px,py,color,alpha){ctx.globalAlpha=alpha;
+  ctx.fillStyle=color;ctx.fillRect(px*PX+1,py*PX+1,PX-2,PX-2);
+  ctx.fillStyle='rgba(255,255,255,.28)';ctx.fillRect(px*PX+2,py*PX+2,PX-6,3);
+  ctx.globalAlpha=1;}
+function setNext(){gn.clearRect(0,0,96,64);const s=nxt.sh,cols=s[0].length;
+  const ox=(96-cols*20)/2,oy=(64-s.length*20)/2;
+  for(let r=0;r<s.length;r++)for(let c=0;c<s[r].length;c++)if(s[r][c]){
+    gn.fillStyle=COLORS[Math.floor(Math.random()*COLORS.length)];gn.fillRect(ox+c*20,oy+r*20,18,18);}}
+function restart(){resetAll();}
+function go(){if(over)return;drop();draw();update();}
+let timer=setInterval(function(){if(!over){step();draw();update();}},430);
+addEventListener('keydown',e=>{
+  if(over){if(e.key==='r'||e.key==='R')restart();return;}
+  switch(e.key){
+    case 'ArrowLeft':if(!collide(cur.sh,cur.x-1,cur.y)){cur.x--;}break;
+    case 'ArrowRight':if(!collide(cur.sh,cur.x+1,cur.y)){cur.x++;}break;
+    case 'ArrowDown':go();break;
+    case 'ArrowUp':{const m=rotate(cur.sh);if(!collide(m,cur.x,cur.y))cur.sh=m;}break;
+    case ' ':while(!collide(cur.sh,cur.x,cur.y+1))cur.y++;fix();draw();break;
+    case 'r':case 'R':restart();break;}
+  draw();update();});
+resetAll();
+</script>
+</body>
+</html>
